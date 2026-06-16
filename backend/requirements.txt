@@ -1,0 +1,37 @@
+# backend/requirements.txt
+# 固定主版本号，防止破坏性升级。更新前请先在开发环境验证。
+
+# ---- Web 框架 ----
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+python-multipart==0.0.20      # FastAPI 文件上传依赖
+
+# ---- 数据校验 ----
+pydantic==2.11.4
+
+# ---- HTTP 客户端 ----
+requests==2.32.3
+httpx==0.28.1
+
+# ---- AI / LLM ----
+openai==1.82.1
+
+# ---- 数据处理 ----
+openpyxl==3.1.5               # Excel 知识库读写
+pandas==2.2.3
+
+# ---- 图像处理 ----
+Pillow==11.2.1
+
+# ---- 云存储 ----
+boto3==1.38.23                # Cloudflare R2（S3 兼容）
+botocore==1.38.23
+
+# ---- 联网搜索（可选）----
+tavily-python==0.5.1
+
+# ---- 中文处理 ----
+pypinyin==0.54.0              # 汉字转拼音（生成 R2 文件名）
+
+# ---- 环境变量 ----
+python-dotenv==1.1.0

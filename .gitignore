@@ -1,0 +1,58 @@
+# ===========================
+# OmniSKU-Forge — .gitignore
+# ===========================
+
+# ---- 环境变量 / 密钥 ----
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# ---- Node / Next.js ----
+node_modules/
+.next/
+out/
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+
+# ---- 编辑器 ----
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ---- 本地数据 / 生成物 ----
+backend/data/*.xlsx
+backend/data/*.xls
+backend/data/*.csv
+*.log
+*.tmp
+temp/
+tmp/
+
+# ---- Docker ----
+*.dockerignore
+
+# ---- TypeScript 编译缓存 ----
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+frontend/tsconfig.tsbuildinfo
