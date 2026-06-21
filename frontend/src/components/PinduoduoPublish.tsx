@@ -104,6 +104,15 @@ const TEXT_MODELS = [
     }
   };
 
+  // ── RunPod LTX 服务健康状态 ──
+  const [ltxServiceReady, setLtxServiceReady] = useState<boolean | null>(null); // null=checking
+  useEffect(() => {
+    fetch(`${API_BASE}/api/v1/video/ltx-health`)
+      .then(r => r.json())
+      .then(d => setLtxServiceReady(d.ready === true))
+      .catch(() => setLtxServiceReady(false));
+  }, []);
+
   // ── 商品视频（1:1/16:9，Seedance + LTX） ──
   const [generatingVideo, setGeneratingVideo] = useState(false);
   const [videoRenderProgress, setVideoRenderProgress] = useState("");
@@ -1582,6 +1591,29 @@ const TEXT_MODELS = [
                 </Image.PreviewGroup>
               </div>
             </Form.Item>
+
+            {/* RunPod LTX 服务状态栏（三个视频版块共用） */}
+            <div className="mb-4 flex items-center gap-2 px-1">
+              <span className="text-xs text-gray-500 font-medium">RunPod LTX-Video：</span>
+              {ltxServiceReady === null && (
+                <span className="text-xs text-gray-400 flex items-center gap-1"><Spin size="small" /> 检测中...</span>
+              )}
+              {ltxServiceReady === true && (
+                <span className="text-xs text-green-600 font-bold flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-green-500 inline-block" /> 服务就绪
+                </span>
+              )}
+              {ltxServiceReady === false && (
+                <span className="text-xs text-red-500 font-bold flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-red-400 inline-block" /> 服务未就绪（RunPod 未启动或模型加载中）
+                  <button className="ml-2 underline text-blue-500 cursor-pointer bg-transparent border-none p-0"
+                    onClick={() => {
+                      setLtxServiceReady(null);
+                      fetch(`${API_BASE}/api/v1/video/ltx-health`).then(r=>r.json()).then(d=>setLtxServiceReady(d.ready===true)).catch(()=>setLtxServiceReady(false));
+                    }}>重新检测</button>
+                </span>
+              )}
+            </div>
 
             {/* ── 商品视频（1:1 / 16:9 / 3:4，≤60s，展示在轮播图首位） ── */}
             <Form.Item label={<span className="font-bold text-gray-700 block">商品视频</span>} className="mb-8">
