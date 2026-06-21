@@ -1634,7 +1634,7 @@ const TEXT_MODELS = [
                       <span className="text-xs text-indigo-500 font-medium">全局风格：</span>
                       <span className="text-xs text-gray-600 ml-1">{script.global_style_prompt}</span>
                     </div>
-                    <div className="max-h-48 overflow-y-auto divide-y divide-gray-100">
+                    <div className="divide-y divide-gray-100">
                       {script.storyboard.map((shot, idx) => (
                         <div key={idx} className="flex gap-3 px-4 py-2 hover:bg-gray-50">
                           <span className="flex-shrink-0 w-5 h-5 bg-indigo-100 text-indigo-700 rounded-full flex items-center justify-center text-xs font-bold mt-0.5">{idx+1}</span>
@@ -1751,7 +1751,7 @@ const TEXT_MODELS = [
                       <span className="text-xs text-orange-500 font-medium">全局风格：</span>
                       <span className="text-xs text-gray-600 ml-1">{explainScript.global_style_prompt}</span>
                     </div>
-                    <div className="max-h-48 overflow-y-auto divide-y divide-gray-100">
+                    <div className="divide-y divide-gray-100">
                       {explainScript.storyboard.map((shot, idx) => (
                         <div key={idx} className="flex gap-3 px-4 py-2 hover:bg-gray-50">
                           <span className="flex-shrink-0 w-5 h-5 bg-orange-100 text-orange-700 rounded-full flex items-center justify-center text-xs font-bold mt-0.5">{idx+1}</span>
@@ -1859,7 +1859,7 @@ const TEXT_MODELS = [
                       <span className="text-xs text-teal-500 font-medium">全局风格：</span>
                       <span className="text-xs text-gray-600 ml-1">{detailScript.global_style_prompt}</span>
                     </div>
-                    <div className="max-h-48 overflow-y-auto divide-y divide-gray-100">
+                    <div className="divide-y divide-gray-100">
                       {detailScript.storyboard.map((shot, idx) => (
                         <div key={idx} className="flex gap-3 px-4 py-2 hover:bg-gray-50">
                           <span className="flex-shrink-0 w-5 h-5 bg-teal-100 text-teal-700 rounded-full flex items-center justify-center text-xs font-bold mt-0.5">{idx+1}</span>
