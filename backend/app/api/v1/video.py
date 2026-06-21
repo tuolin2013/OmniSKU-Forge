@@ -149,67 +149,69 @@ _LTX_SHOT_TIMEOUT_S = 600
 @router.post("/generate-from-script", response_model=ScriptToVideoResponse)
 async def generate_from_script(body: ScriptToVideoRequest):
     """
-    接受完整分镜 JSON，逐条调用 autoDL LTX-Video 服务生成视频切片。
+    接受完整分镜 JSON，一次性批量提交到 RunPod LTX-Video storyboard 接口。
 
-    - video_type == "image-to-video"：使用 image_urls[0] 作为参考帧（产品出镜）
-    - video_type == "text-to-video"：纯文生视频，不传图片
+    - video_type == "image-to-video"：将 image_urls[0] 转 base64 作为参考帧
+    - video_type == "text-to-video"：纯文生视频
 
     返回每条分镜的生成结果，包含 video_url 或 error 信息。
     """
-    from app.api.core.services.ltx_video_engine import generate_video_ltx
+    from app.api.core.services.ltx_video_engine import (
+        generate_storyboard_ltx,
+        _url_to_base64,
+        _RATIO_SIZES,
+        _nearest_8n_plus_1,
+    )
 
-    # 取第一张实拍图作为 image-to-video 参考帧
+    # 取第一张实拍图作为 image-to-video 参考帧（下载 + 转 base64，只做一次）
     ref_image_url: Optional[str] = body.image_urls[0] if body.image_urls else None
+    ref_b64: Optional[str] = None
+    if ref_image_url:
+        ref_b64 = await asyncio.to_thread(_url_to_base64, ref_image_url)
 
-    results: List[ShotResult] = []
+    width, height = _RATIO_SIZES.get(body.ratio, (704, 480))
+    num_frames = _nearest_8n_plus_1(body.num_frames)
 
-    for i, shot in enumerate(body.storyboard):
-        # 拼接全局风格 + 分镜提示词
+    # 组装 shots 列表
+    shots = []
+    for shot in body.storyboard:
         full_prompt = (
             f"{body.global_style_prompt}, {shot.scene_prompt}".strip(", ")
             if body.global_style_prompt
             else shot.scene_prompt
         )
+        s: dict = {
+            "prompt": full_prompt,
+            "num_frames": num_frames,
+            "num_inference_steps": body.steps,
+            "height": height,
+            "width": width,
+            "fps": 24,
+        }
+        if shot.video_type == "image-to-video" and ref_b64:
+            s["reference_image"] = ref_b64
+        shots.append(s)
 
-        # 根据 video_type 决定是否传入参考图
-        use_image = (shot.video_type == "image-to-video") and (ref_image_url is not None)
-        image_arg = ref_image_url if use_image else None
+    # 单次批量调用，最长等整个 storyboard 完成（20 min）
+    _STORYBOARD_TIMEOUT_S = 1200
+    try:
+        url_list: List[str] = await asyncio.wait_for(
+            asyncio.to_thread(generate_storyboard_ltx, shots, num_frames, body.steps),
+            timeout=_STORYBOARD_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        err = f"❌ 整批渲染超时（超过 {_STORYBOARD_TIMEOUT_S // 60} 分钟）"
+        url_list = [err] * len(shots)
+    except Exception as exc:
+        err = f"❌ 批量生成异常: {exc}"
+        url_list = [err] * len(shots)
 
-        try:
-            video_url = await asyncio.wait_for(
-                asyncio.to_thread(
-                    generate_video_ltx,
-                    full_prompt,
-                    image_arg,
-                    body.ratio,
-                    body.num_frames,
-                    body.steps,
-                    body.cfg_scale,
-                ),
-                timeout=_LTX_SHOT_TIMEOUT_S,
-            )
-
-            if video_url.startswith("❌"):
-                results.append(ShotResult(
-                    index=i, logic=shot.logic, video_type=shot.video_type,
-                    error=video_url,
-                ))
-            else:
-                results.append(ShotResult(
-                    index=i, logic=shot.logic, video_type=shot.video_type,
-                    video_url=video_url,
-                ))
-
-        except asyncio.TimeoutError:
-            results.append(ShotResult(
-                index=i, logic=shot.logic, video_type=shot.video_type,
-                error=f"❌ 分镜 {i+1} 渲染超时（超过 {_LTX_SHOT_TIMEOUT_S // 60} 分钟）",
-            ))
-        except Exception as exc:
-            results.append(ShotResult(
-                index=i, logic=shot.logic, video_type=shot.video_type,
-                error=f"❌ 分镜 {i+1} 异常: {exc}",
-            ))
+    results: List[ShotResult] = []
+    for i, (shot, url) in enumerate(zip(body.storyboard, url_list)):
+        if url.startswith("❌"):
+            results.append(ShotResult(index=i, logic=shot.logic, video_type=shot.video_type, error=url))
+        else:
+            results.append(ShotResult(index=i, logic=shot.logic, video_type=shot.video_type, video_url=url))
 
     success_count = sum(1 for r in results if r.video_url)
     failed_count = len(results) - success_count
