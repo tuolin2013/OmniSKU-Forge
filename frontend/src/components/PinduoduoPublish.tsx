@@ -1,4 +1,5 @@
 // frontend/src/components/PinduoduoPublish.tsx
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8000';
 // Version: 4.4 (Fixed Silent Failure in Title Generation)
 import React, { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Select, message, Divider, Modal, Spin, Upload, Image, Cascader } from 'antd';
@@ -28,8 +29,15 @@ const TEXT_MODELS = [
   const [selectedSkuName, setSelectedSkuName] = useState<string>('');
 
   useEffect(() => {
-    fetch('http://127.0.0.1:8000/api/catalog/tree')
-      .then(res => res.json())
+    fetch(`${API_BASE}/api/catalog/tree`)
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          throw new Error('后端未返回 JSON，请确认后端服务已启动');
+        }
+        return res.json();
+      })
       .then(data => {
         if (data.code === 200) {
           setCatalogTree(data.data);
@@ -37,6 +45,7 @@ const TEXT_MODELS = [
       })
       .catch(err => {
         console.error('获取类目树失败:', err);
+        message.warning(`无法连接后端，类目树加载失败: ${err.message}`);
       });
   }, []);
 
@@ -95,10 +104,37 @@ const TEXT_MODELS = [
     }
   };
 
-  const [generatingVideo, setGeneratingVideo] = useState(false); 
+  // ── 商品视频（1:1/16:9，Seedance + LTX） ──
+  const [generatingVideo, setGeneratingVideo] = useState(false);
   const [videoRenderProgress, setVideoRenderProgress] = useState("");
   const [videoClips, setVideoClips] = useState<string[]>(Array(12).fill(''));
-  const [generatingDetails, setGeneratingDetails] = useState(false); 
+  const [generatingScript, setGeneratingScript] = useState(false);
+  const [script, setScript] = useState<{global_style_prompt: string; ratio?: string; storyboard: {logic: string; scene_prompt: string; video_type?: string}[]} | null>(null);
+  const [generatingLtx, setGeneratingLtx] = useState(false);
+  const [ltxProgress, setLtxProgress] = useState("");
+  const [ltxClips, setLtxClips] = useState<string[]>(Array(12).fill(''));
+
+  // ── 商品讲解视频（9:16，Seedance + LTX） ──
+  const [generatingExplainVideo, setGeneratingExplainVideo] = useState(false);
+  const [explainVideoProgress, setExplainVideoProgress] = useState("");
+  const [explainVideoClips, setExplainVideoClips] = useState<string[]>(Array(12).fill(''));
+  const [generatingExplainScript, setGeneratingExplainScript] = useState(false);
+  const [explainScript, setExplainScript] = useState<{global_style_prompt: string; ratio?: string; storyboard: {logic: string; scene_prompt: string; video_type?: string}[]} | null>(null);
+  const [generatingExplainLtx, setGeneratingExplainLtx] = useState(false);
+  const [explainLtxProgress, setExplainLtxProgress] = useState("");
+  const [explainLtxClips, setExplainLtxClips] = useState<string[]>(Array(12).fill(''));
+
+  // ── 商详视频（16:9，Seedance + LTX） ──
+  const [generatingDetailVideo, setGeneratingDetailVideo] = useState(false);
+  const [detailVideoProgress, setDetailVideoProgress] = useState("");
+  const [detailVideoClips, setDetailVideoClips] = useState<string[]>(Array(12).fill(''));
+  const [generatingDetailScript, setGeneratingDetailScript] = useState(false);
+  const [detailScript, setDetailScript] = useState<{global_style_prompt: string; ratio?: string; storyboard: {logic: string; scene_prompt: string; video_type?: string}[]} | null>(null);
+  const [generatingDetailLtx, setGeneratingDetailLtx] = useState(false);
+  const [detailLtxProgress, setDetailLtxProgress] = useState("");
+  const [detailLtxClips, setDetailLtxClips] = useState<string[]>(Array(12).fill(''));
+
+  const [generatingDetails, setGeneratingDetails] = useState(false);
   const [detailImages, setDetailImages] = useState<string[]>([]);
   const [downloading, setDownloading] = useState(false);
   const [downloadingDetails, setDownloadingDetails] = useState(false);
@@ -113,7 +149,9 @@ const TEXT_MODELS = [
     { name: "生成SKU图", active: generatingSkuImages, status: skuRenderProgress },
     { name: "生成买家秀", active: generatingBuyerShows, status: buyerShowProgress },
     { name: "组装一键海报", active: runningOneClick, status: "工业级海报组装中..." },
-    { name: "生成视频矩阵", active: generatingVideo, status: videoRenderProgress }
+    { name: "生成视频矩阵", active: generatingVideo, status: videoRenderProgress },
+    { name: "生成分镜脚本", active: generatingScript, status: "AI 构思分镜中..." },
+    { name: "LTX 渲染视频", active: generatingLtx, status: ltxProgress },
   ].filter(t => t.active);
 
   const [selectedR2Images, setSelectedR2Images] = useState<string[]>([]); 
@@ -132,7 +170,7 @@ const TEXT_MODELS = [
     const fetchR2Images = async (page: number, append: boolean = false) => {
     setFetchingR2(true);
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/v1/r2/images?page=${page}&limit=20`);
+      const response = await fetch(`${API_BASE}/api/v1/r2/images?page=${page}&limit=20`);
       if (!response.ok) throw new Error(`后端未响应 (HTTP ${response.status})`);
       const resData = await response.json();
       if (resData.code === 200) {
@@ -185,7 +223,7 @@ const TEXT_MODELS = [
     const formData = new FormData();
     formData.append('file', file);
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/v1/r2/upload', { method: 'POST', body: formData });
+      const res = await fetch(`${API_BASE}/api/v1/r2/upload`, { method: 'POST', body: formData });
       if (!res.ok) throw new Error(`后端连不上 (HTTP ${res.status})`);
       const data = await res.json();
       if (data.code === 200) {
@@ -220,7 +258,7 @@ const TEXT_MODELS = [
     message.loading({ content: ' 流水线启动！3个大脑正在狂奔，请等待约 45 秒...', key: 'one_click', duration: 0 });
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/v1/agents/generate-one-click', {
+      const res = await fetch(`${API_BASE}/api/v1/agents/generate-one-click`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -265,7 +303,7 @@ const TEXT_MODELS = [
     const timeoutId = setTimeout(() => abortCtrl.abort(), 180_000);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/v1/agents/pm-analyze', {
+      const response = await fetch(`${API_BASE}/api/v1/agents/pm-analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: abortCtrl.signal,
@@ -318,7 +356,7 @@ const TEXT_MODELS = [
     setTitleModel(targetModelId);
     setGeneratingTitle(true);
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/v1/agents/ops-title', {
+      const response = await fetch(`${API_BASE}/api/v1/agents/ops-title`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           platform: 'pinduoduo', 
@@ -365,7 +403,7 @@ const TEXT_MODELS = [
     abortControllers.current['main'] = new AbortController();
     
     try {
-      const briefRes = await fetch('http://127.0.0.1:8000/api/v1/agents/design-main-image-brief', {
+      const briefRes = await fetch(`${API_BASE}/api/v1/agents/design-main-image-brief`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ platform: 'pinduoduo', pm_report: pmReport, ops_report: form.getFieldValue('base_desc') || '' })
       });
@@ -407,7 +445,7 @@ const TEXT_MODELS = [
           attempts++;
           setMainRenderProgress(`【${targetModelId}】生成第 ${i + 1}/10 张...${attempts > 1 ? ` (重试 ${attempts}/3)` : ''}`);
           try {
-            const drawRes = await fetch('http://127.0.0.1:8000/api/v1/agents/generate-image', {
+            const drawRes = await fetch(`${API_BASE}/api/v1/agents/generate-image`, {
               method: 'POST', 
               headers: { 'Content-Type': 'application/json' },
               signal: abortControllers.current['main']?.signal,
@@ -474,7 +512,7 @@ const TEXT_MODELS = [
       
       for (let i = 0; i < validImages.length; i++) {
         const url = validImages[i];
-        const response = await fetch(`http://127.0.0.1:8000/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
+        const response = await fetch(`${API_BASE}/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
         const blob = await response.blob();
         folder?.file(`主图_${i + 1}.jpg`, blob);
       }
@@ -489,6 +527,82 @@ const TEXT_MODELS = [
     }
   };
 
+  // ─── 生成分镜脚本（不渲染视频）────────────────────────────────────────────
+  type ScriptData = { global_style_prompt: string; ratio?: string; storyboard: { logic: string; scene_prompt: string; video_type?: string }[] };
+
+  const _generateScriptOnly = async () => {
+    const pmReport = form.getFieldValue('pm_report');
+    const opsReport = form.getFieldValue('base_desc') || '';
+    if (!pmReport) { message.warning('请先生成策划案'); return; }
+    setGeneratingScript(true);
+    setScript(null);
+    message.loading({ content: '分镜脚本生成中...', key: 'script_gen', duration: 0 });
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/video/design-script`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pm_report: pmReport, ops_report: opsReport, platform: 'pinduoduo', ratio: '16:9', num_clips: 12 })
+      });
+      if (!res.ok) throw new Error(`剧本接口异常 (HTTP ${res.status})`);
+      const data = await res.json();
+      if (data.code !== 200) throw new Error(data.message || '后端返回异常');
+      let clean: string = data.data;
+      if (clean.includes('```json')) clean = clean.split('```json')[1].split('```')[0].trim();
+      else if (clean.includes('```')) clean = clean.split('```')[1].split('```')[0].trim();
+      const parsed: ScriptData = JSON.parse(clean);
+      setScript(parsed);
+      message.success({ content: '分镜脚本已就绪！', key: 'script_gen', duration: 3 });
+    } catch (e: any) {
+      message.error({ content: `脚本生成失败: ${e.message}`, key: 'script_gen', duration: 4 });
+    } finally {
+      setGeneratingScript(false);
+    }
+  };
+
+  // ─── 根据分镜脚本调用 LTX-Video 批量生成 ──────────────────────────────────
+  const _generateLtxFromScript = async () => {
+    if (!script || script.storyboard.length === 0) { message.warning('请先生成分镜脚本'); return; }
+    setGeneratingLtx(true);
+    setLtxProgress('准备提交 LTX-Video...');
+    const total = script.storyboard.length;
+    setLtxClips(Array(total).fill(''));
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/video/generate-from-script`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          global_style_prompt: script.global_style_prompt,
+          ratio: script.ratio || '16:9',
+          storyboard: script.storyboard.map(s => ({
+            logic: s.logic,
+            scene_prompt: s.scene_prompt,
+            video_type: s.video_type || 'text-to-video',
+          })),
+          image_urls: selectedR2Images,
+        }),
+      });
+      if (!res.ok) throw new Error(`LTX 接口异常 (HTTP ${res.status})`);
+      const data = await res.json();
+      if (data.code === 200 && Array.isArray(data.results)) {
+        const newClips = Array(total).fill('');
+        data.results.forEach((r: { index: number; video_url?: string; error?: string }) => {
+          if (r.video_url) newClips[r.index] = r.video_url;
+          else if (r.error) message.warning(`分镜 ${r.index + 1} 失败: ${r.error}`);
+        });
+        setLtxClips(newClips);
+        const ok = data.success_count, fail = data.failed_count;
+        if (fail === 0) message.success('LTX 全部渲染完毕！');
+        else message.warning(`渲染结束：${ok} 成功，${fail} 失败`);
+      } else {
+        throw new Error(data.detail || '后端返回异常');
+      }
+    } catch (e: any) {
+      message.error(`LTX 生成中断: ${e.message}`);
+    } finally {
+      setGeneratingLtx(false);
+      setLtxProgress('');
+    }
+  };
+
   const handleGenerateVideo = async () => {
     const pmReport = form.getFieldValue('pm_report');
     const opsReport = form.getFieldValue('base_desc') || '';
@@ -500,7 +614,7 @@ const TEXT_MODELS = [
     abortControllers.current['video'] = new AbortController();
 
     try {
-      const scriptRes = await fetch(`http://127.0.0.1:8000/api/v1/video/design-script`, {
+      const scriptRes = await fetch(`${API_BASE}/api/v1/video/design-script`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pm_report: pmReport, ops_report: opsReport, platform: 'pinduoduo' })
@@ -524,7 +638,7 @@ const TEXT_MODELS = [
         setVideoRenderProgress(`生成视频切片 ${i + 1}/${numClips}...`);
         
         try {
-          const videoRes = await fetch(`http://127.0.0.1:8000/api/v1/video/generate`, {
+          const videoRes = await fetch(`${API_BASE}/api/v1/video/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             signal: abortControllers.current['video']?.signal,
@@ -573,7 +687,7 @@ const TEXT_MODELS = [
       const folder = zip.folder('pinduoduo_video_clips');
       for (let i = 0; i < validClips.length; i++) {
         const url = validClips[i];
-        const response = await fetch(`http://127.0.0.1:8000/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
+        const response = await fetch(`${API_BASE}/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
         const blob = await response.blob();
         folder?.file(`拼多多视频切片_${i + 1}.mp4`, blob);
       }
@@ -599,7 +713,7 @@ const TEXT_MODELS = [
       
       for (let i = 0; i < validImages.length; i++) {
         const url = validImages[i];
-        const response = await fetch(`http://127.0.0.1:8000/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
+        const response = await fetch(`${API_BASE}/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
         const blob = await response.blob();
         folder?.file(`详情页_${i + 1}.jpg`, blob);
       }
@@ -627,7 +741,7 @@ const TEXT_MODELS = [
     abortControllers.current['detail'] = new AbortController();
 
     try {
-      const briefRes = await fetch('http://127.0.0.1:8000/api/v1/agents/design-detail-image-brief', {
+      const briefRes = await fetch(`${API_BASE}/api/v1/agents/design-detail-image-brief`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ platform: 'pinduoduo', pm_report: pmReport, ops_report: form.getFieldValue('base_desc') || '' })
       });
@@ -667,7 +781,7 @@ const TEXT_MODELS = [
           setDetailRenderProgress(`生成第 ${i + 1}/${numSlices} 屏...${attempts > 1 ? ` (重试 ${attempts}/3)` : ''}`);
           message.loading({ content: `生成第 ${i + 1}/${numSlices} 屏...${attempts > 1 ? ` (重试 ${attempts}/3)` : ''}`, key: 'details' });
           try {
-            const drawRes = await fetch('http://127.0.0.1:8000/api/v1/agents/generate-image', {
+            const drawRes = await fetch(`${API_BASE}/api/v1/agents/generate-image`, {
               method: 'POST', 
               headers: { 'Content-Type': 'application/json' },
               signal: abortControllers.current['detail']?.signal,
@@ -732,7 +846,7 @@ const TEXT_MODELS = [
     abortControllers.current['whitebg'] = new AbortController();
 
     try {
-      const briefRes = await fetch('http://127.0.0.1:8000/api/v1/agents/design-white-bg-image-brief', {
+      const briefRes = await fetch(`${API_BASE}/api/v1/agents/design-white-bg-image-brief`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ platform: 'pinduoduo', pm_report: pmReport, ops_report: form.getFieldValue('base_desc') || '' })
       });
@@ -771,7 +885,7 @@ const TEXT_MODELS = [
           attempts++;
           setWhiteBgRenderProgress(`生成第 ${i + 1}/${numImages} 张...${attempts > 1 ? ` (重试 ${attempts}/3)` : ''}`);
           try {
-            const drawRes = await fetch('http://127.0.0.1:8000/api/v1/agents/generate-image', {
+            const drawRes = await fetch(`${API_BASE}/api/v1/agents/generate-image`, {
               method: 'POST', 
               headers: { 'Content-Type': 'application/json' },
               signal: abortControllers.current['whitebg']?.signal,
@@ -835,7 +949,7 @@ const TEXT_MODELS = [
       
       for (let i = 0; i < validImages.length; i++) {
         const url = validImages[i];
-        const response = await fetch(`http://127.0.0.1:8000/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
+        const response = await fetch(`${API_BASE}/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
         const blob = await response.blob();
         folder?.file(`白底图_${i + 1}.jpg`, blob);
       }
@@ -862,7 +976,7 @@ const TEXT_MODELS = [
     abortControllers.current['sku'] = new AbortController();
 
     try {
-      const briefRes = await fetch('http://127.0.0.1:8000/api/v1/agents/design-sku-image-brief', {
+      const briefRes = await fetch(`${API_BASE}/api/v1/agents/design-sku-image-brief`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ platform: 'pinduoduo', pm_report: pmReport, ops_report: form.getFieldValue('base_desc') || '' })
       });
@@ -901,7 +1015,7 @@ const TEXT_MODELS = [
           attempts++;
           setSkuRenderProgress(`生成第 ${i + 1}/${numImages} 张...${attempts > 1 ? ` (重试 ${attempts}/3)` : ''}`);
           try {
-            const drawRes = await fetch('http://127.0.0.1:8000/api/v1/agents/generate-image', {
+            const drawRes = await fetch(`${API_BASE}/api/v1/agents/generate-image`, {
               method: 'POST', 
               headers: { 'Content-Type': 'application/json' },
               signal: abortControllers.current['sku']?.signal,
@@ -965,7 +1079,7 @@ const TEXT_MODELS = [
     abortControllers.current['buyerShow'] = new AbortController();
 
     try {
-      const briefRes = await fetch('http://127.0.0.1:8000/api/v1/agents/design-buyer-show', {
+      const briefRes = await fetch(`${API_BASE}/api/v1/agents/design-buyer-show`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           platform: 'pinduoduo', 
@@ -1037,7 +1151,7 @@ const TEXT_MODELS = [
           attempts++;
           setBuyerShowProgress(`生成第 ${i + 1}/${numImages} 张...${attempts > 1 ? ` (重试 ${attempts}/3)` : ''}`);
           try {
-            const drawRes = await fetch('http://127.0.0.1:8000/api/v1/agents/generate-image', {
+            const drawRes = await fetch(`${API_BASE}/api/v1/agents/generate-image`, {
               method: 'POST', 
               headers: { 'Content-Type': 'application/json' },
               signal: abortControllers.current['buyerShow']?.signal,
@@ -1097,7 +1211,7 @@ const TEXT_MODELS = [
       for (let i = 0; i < buyerShowImages.length; i++) {
         const url = buyerShowImages[i];
         if (url) {
-          const response = await fetch(`http://127.0.0.1:8000/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
+          const response = await fetch(`${API_BASE}/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
           const blob = await response.blob();
           folder?.file(`买家秀_${i + 1}.jpg`, blob);
         }
@@ -1117,6 +1231,142 @@ const TEXT_MODELS = [
     }
   };
 
+  // ─── 通用视频生成工具函数 ───────────────────────────────────────────────────
+  const _generateScript = async (
+    ratio: string,
+    setGenerating: (v: boolean) => void,
+    setScriptState: (s: any) => void,
+    msgKey: string,
+  ) => {
+    const pmReport = form.getFieldValue('pm_report');
+    const opsReport = form.getFieldValue('base_desc') || '';
+    if (!pmReport) { message.warning('请先生成策划案'); return; }
+    setGenerating(true);
+    setScriptState(null);
+    message.loading({ content: '分镜脚本生成中...', key: msgKey, duration: 0 });
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/video/design-script`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pm_report: pmReport, ops_report: opsReport, platform: 'pinduoduo', ratio, num_clips: 12 })
+      });
+      if (!res.ok) throw new Error(`剧本接口异常 (HTTP ${res.status})`);
+      const data = await res.json();
+      if (data.code !== 200) throw new Error(data.message || '后端返回异常');
+      let clean: string = data.data;
+      if (clean.includes('```json')) clean = clean.split('```json')[1].split('```')[0].trim();
+      else if (clean.includes('```')) clean = clean.split('```')[1].split('```')[0].trim();
+      setScriptState(JSON.parse(clean));
+      message.success({ content: '分镜脚本已就绪！', key: msgKey, duration: 3 });
+    } catch (e: any) {
+      message.error({ content: `脚本生成失败: ${e.message}`, key: msgKey, duration: 4 });
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const _generateLtx = async (
+    scriptState: any,
+    setGenerating: (v: boolean) => void,
+    setProgress: (s: string) => void,
+    setClips: (c: string[]) => void,
+  ) => {
+    if (!scriptState || scriptState.storyboard.length === 0) { message.warning('请先生成分镜脚本'); return; }
+    setGenerating(true);
+    setProgress('准备提交 LTX-Video（RunPod）...');
+    const total = scriptState.storyboard.length;
+    setClips(Array(total).fill(''));
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/video/generate-from-script`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          global_style_prompt: scriptState.global_style_prompt,
+          ratio: scriptState.ratio || '16:9',
+          storyboard: scriptState.storyboard.map((s: any) => ({
+            logic: s.logic,
+            scene_prompt: s.scene_prompt,
+            video_type: s.video_type || 'text-to-video',
+          })),
+          image_urls: selectedR2Images,
+        }),
+      });
+      if (!res.ok) throw new Error(`LTX 接口异常 (HTTP ${res.status})`);
+      const data = await res.json();
+      if (data.code === 200 && Array.isArray(data.results)) {
+        const newClips = Array(total).fill('');
+        data.results.forEach((r: { index: number; video_url?: string; error?: string }) => {
+          if (r.video_url) newClips[r.index] = r.video_url;
+          else if (r.error) message.warning(`分镜 ${r.index + 1} 失败: ${r.error}`);
+        });
+        setClips(newClips);
+        const fail = data.failed_count;
+        if (fail === 0) message.success('LTX 全部渲染完毕！');
+        else message.warning(`渲染结束：${data.success_count} 成功，${fail} 失败`);
+      } else {
+        throw new Error(data.detail || '后端返回异常');
+      }
+    } catch (e: any) {
+      message.error(`LTX 生成中断: ${e.message}`);
+    } finally {
+      setGenerating(false);
+      setProgress('');
+    }
+  };
+
+  const _generateSeedanceVideo = async (
+    ratio: string,
+    setGenerating: (v: boolean) => void,
+    setProgress: (s: string) => void,
+    setClips: (c: string[]) => void,
+    abortKey: string,
+  ) => {
+    const pmReport = form.getFieldValue('pm_report');
+    const opsReport = form.getFieldValue('base_desc') || '';
+    if (!pmReport) return message.warning('请先生成策划案');
+    setGenerating(true);
+    setProgress('构思视频剧本中...');
+    abortControllers.current[abortKey] = new AbortController();
+    try {
+      const scriptRes = await fetch(`${API_BASE}/api/v1/video/design-script`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pm_report: pmReport, ops_report: opsReport, platform: 'pinduoduo', ratio })
+      });
+      if (!scriptRes.ok) throw new Error('剧本生成失败');
+      const scriptData = await scriptRes.json();
+      let cleanJsonStr = scriptData.data;
+      if (cleanJsonStr.includes('```json')) cleanJsonStr = cleanJsonStr.split('```json')[1].split('```')[0].trim();
+      const parsedData = JSON.parse(cleanJsonStr);
+      const numClips = parsedData.storyboard.length || 12;
+      const updatedClips = Array(numClips).fill('');
+      setClips(Array(numClips).fill(''));
+      for (let i = 0; i < numClips; i++) {
+        if (abortControllers.current[abortKey]?.signal.aborted) break;
+        const scene = parsedData.storyboard[i];
+        setProgress(`生成视频切片 ${i + 1}/${numClips}...`);
+        try {
+          const videoRes = await fetch(`${API_BASE}/api/v1/video/generate`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            signal: abortControllers.current[abortKey]?.signal,
+            body: JSON.stringify({ prompt: `${parsedData.global_style_prompt}, ${scene.scene_prompt}`, type: 'pinduoduo_main', image_urls: selectedR2Images })
+          });
+          const videoData = await videoRes.json();
+          if (videoRes.ok && videoData.url) {
+            updatedClips[i] = videoData.url;
+            setClips([...updatedClips]);
+          }
+        } catch (err: any) { if (err.name === 'AbortError') break; }
+      }
+      if (abortControllers.current[abortKey]?.signal.aborted) message.warning('视频生成已手动终止');
+      else message.success('视频生成完成！');
+    } catch (error: any) {
+      message.error(`视频生成中断: ${error.message}`);
+    } finally {
+      setGenerating(false);
+      setProgress('');
+      abortControllers.current[abortKey] = null;
+    }
+  };
+
   const handleDownloadSkuImages = async () => {
     const validImages = skuImages.filter(url => url);
     if (validImages.length === 0) return message.warning('没有可下载的SKU图！');
@@ -1129,7 +1379,7 @@ const TEXT_MODELS = [
       
       for (let i = 0; i < validImages.length; i++) {
         const url = validImages[i];
-        const response = await fetch(`http://127.0.0.1:8000/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
+        const response = await fetch(`${API_BASE}/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
         const blob = await response.blob();
         folder?.file(`SKU图_${i + 1}.jpg`, blob);
       }
@@ -1333,62 +1583,333 @@ const TEXT_MODELS = [
               </div>
             </Form.Item>
 
-            <Form.Item label={<span className="font-bold text-gray-700 block">视频分镜矩阵</span>} className="mb-12">
-              <div className="flex flex-col">
-                <div className="flex justify-between items-center flex-wrap gap-3 mb-6 bg-gray-50 p-4 border border-gray-100 rounded-lg">
-                  <div className="flex flex-wrap gap-3 items-center">
-                    <Button 
-                      type="primary" 
-                      icon={<VideoCameraOutlined />} 
-                      onClick={handleGenerateVideo} 
-                      loading={generatingVideo}
-                      className="bg-purple-600 font-bold"
-                    >
-                      生成 60s 视频分镜切片
-                    </Button>
-                    
-                    {generatingVideo && (
-                      <span className="ml-4 text-purple-600 font-bold text-xs self-center flex items-center">
-                        <Spin size="small" className="mr-2"/>{videoRenderProgress}
-                        <Button type="text" danger size="small" icon={<CloseCircleOutlined />} className="ml-2 py-0" onClick={() => stopGeneration('video')} title="停止生成" />
-                      </span>
-                    )}
-                  </div>
-                  
+            {/* ── 商品视频（1:1 / 16:9 / 3:4，≤60s，展示在轮播图首位） ── */}
+            <Form.Item label={<span className="font-bold text-gray-700 block">商品视频</span>} className="mb-8">
+              <div className="flex flex-col gap-4">
+                <div className="p-3 bg-purple-50 border border-purple-100 rounded-lg text-xs text-purple-700">
+                  视频要求：时长 60 秒以内；宽高比为 <strong>1:1 或 16:9 或 3:4</strong>。上传后展示在商品轮播图位置首位，享全站流量扶持，提升转化。
+                </div>
+
+                {/* AI 生成区 */}
+                <div className="flex flex-wrap gap-3 items-center bg-gray-50 p-4 border border-gray-100 rounded-lg">
+                  <Button icon={<RobotOutlined />} onClick={_generateScriptOnly} loading={generatingScript}
+                    disabled={generatingVideo} className="text-indigo-600 border-indigo-300 bg-indigo-50 font-bold">
+                    生成分镜脚本
+                  </Button>
+                  <Button type="primary" icon={<VideoCameraOutlined />} onClick={handleGenerateVideo} loading={generatingVideo}
+                    disabled={generatingScript} className="bg-purple-600 font-bold">
+                    AI 生成视频（Seedance）
+                  </Button>
+                  {generatingVideo && (
+                    <span className="text-purple-600 font-bold text-xs flex items-center">
+                      <Spin size="small" className="mr-2"/>{videoRenderProgress}
+                      <Button type="text" danger size="small" icon={<CloseCircleOutlined />} className="ml-2" onClick={() => stopGeneration('video')} />
+                    </span>
+                  )}
                   {videoClips.some(v => v !== '') && (
-                    <Button 
-                      size="small"
-                      type="primary" 
-                      icon={<DownloadOutlined />} 
-                      onClick={handleDownloadVideos} 
-                      loading={downloading}
-                      className="bg-green-600 font-bold"
-                    >
-                      一键打包下载全部切片
+                    <Button size="small" icon={<DownloadOutlined />} onClick={handleDownloadVideos}
+                      loading={downloading} className="text-green-600 border-green-300 bg-green-50 font-bold ml-auto">
+                      打包下载
                     </Button>
                   )}
                 </div>
 
-                <div className="grid grid-cols-4 lg:grid-cols-6 gap-4">
-                  {videoClips.map((vidUrl, i) => (
-                    <div key={i} className="aspect-[9/16] bg-black border border-gray-200 rounded-lg flex items-center justify-center relative overflow-hidden shadow-sm group">
-                      <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] px-1.5 rounded z-10">分镜 {i+1}</span>
-                      {vidUrl ? (
-                        <>
-                          <video src={vidUrl} controls className="w-full h-full object-cover" />
-                          <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity z-10 flex gap-1">
-                            <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => window.open(vidUrl)} />
-                          </div>
-                        </>
-                      ) : (
-                        <div className="flex flex-col items-center opacity-40 text-white">
-                          <VideoCameraOutlined className="text-2xl mb-2" />
-                          <span className="text-[10px] font-medium">切片 {i+1} (约5s)</span>
-                        </div>
-                      )}
+                {/* 分镜脚本 + LTX */}
+                {generatingScript && (
+                  <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-lg flex items-center gap-3 text-indigo-700 text-sm">
+                    <Spin size="small" /><span>AI 正在构思分镜脚本，请稍候...</span>
+                  </div>
+                )}
+                {!generatingScript && script && (
+                  <div className="border border-indigo-200 rounded-lg overflow-hidden bg-white shadow-sm">
+                    <div className="bg-gradient-to-r from-indigo-600 to-purple-600 px-4 py-2 flex items-center justify-between">
+                      <span className="text-white font-bold text-sm">📋 分镜脚本（{script.storyboard.length} 个分镜）</span>
+                      <Button size="small" icon={<VideoCameraOutlined />} onClick={_generateLtxFromScript}
+                        loading={generatingLtx} disabled={generatingLtx}
+                        className="bg-white/20 text-white border-white/40 font-bold text-xs">
+                        {generatingLtx ? ltxProgress || 'LTX 渲染中...' : '▶ LTX 生成视频（RunPod）'}
+                      </Button>
                     </div>
-                  ))}
+                    <div className="p-3 bg-indigo-50/50 border-b border-indigo-100">
+                      <span className="text-xs text-indigo-500 font-medium">全局风格：</span>
+                      <span className="text-xs text-gray-600 ml-1">{script.global_style_prompt}</span>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto divide-y divide-gray-100">
+                      {script.storyboard.map((shot, idx) => (
+                        <div key={idx} className="flex gap-3 px-4 py-2 hover:bg-gray-50">
+                          <span className="flex-shrink-0 w-5 h-5 bg-indigo-100 text-indigo-700 rounded-full flex items-center justify-center text-xs font-bold mt-0.5">{idx+1}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-0.5">
+                              <span className="text-xs font-semibold text-gray-800">{shot.logic}</span>
+                              {shot.video_type === 'image-to-video'
+                                ? <span className="text-[10px] px-1 py-0.5 bg-orange-100 text-orange-600 rounded font-bold">🖼 图生视频</span>
+                                : <span className="text-[10px] px-1 py-0.5 bg-gray-100 text-gray-500 rounded font-bold">✏️ 文生视频</span>}
+                            </div>
+                            <div className="text-[11px] text-gray-500 break-words">{shot.scene_prompt}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {ltxClips.some(v => v !== '') && (
+                      <div className="border-t border-indigo-100 p-3 bg-gray-50">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-bold text-gray-700">🎬 LTX 渲染结果</span>
+                          <Button size="small" icon={<DownloadOutlined />} loading={downloading}
+                            onClick={() => { ltxClips.filter(u=>u).forEach((url,i)=>{ const a=document.createElement('a'); a.href=url; a.download=`ltx_clip_${i+1}.mp4`; a.click(); }); }}
+                            className="text-green-600 border-green-300 bg-green-50 font-bold">打包下载</Button>
+                        </div>
+                        <div className="grid grid-cols-4 lg:grid-cols-6 gap-2">
+                          {ltxClips.map((vidUrl, i) => (
+                            <div key={i} className="aspect-video bg-black border border-gray-200 rounded flex items-center justify-center relative overflow-hidden group">
+                              <span className="absolute top-0.5 left-0.5 bg-black/60 text-white text-[9px] px-1 rounded z-10">{i+1}</span>
+                              {vidUrl ? (
+                                <><video src={vidUrl} controls className="w-full h-full object-cover" />
+                                <div className="absolute top-0.5 right-0.5 opacity-0 group-hover:opacity-100 z-10">
+                                  <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => window.open(vidUrl)} />
+                                </div></>
+                              ) : (
+                                <div className="flex flex-col items-center opacity-40 text-white">
+                                  <VideoCameraOutlined className="text-sm" /><span className="text-[8px]">LTX</span>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Seedance 结果网格 */}
+                {videoClips.some(v => v !== '') && (
+                  <div className="grid grid-cols-4 lg:grid-cols-6 gap-3">
+                    {videoClips.filter(v => v).map((vidUrl, i) => (
+                      <div key={i} className="aspect-square bg-black border border-gray-200 rounded-lg flex items-center justify-center relative overflow-hidden shadow-sm group">
+                        <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] px-1.5 rounded z-10">切片 {i+1}</span>
+                        <video src={vidUrl} controls className="w-full h-full object-cover" />
+                        <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 z-10">
+                          <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => window.open(vidUrl)} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </Form.Item>
+
+            {/* ── 商品讲解视频（9:16，10s～5min，展示在商详悬浮窗） ── */}
+            <Form.Item label={<span className="font-bold text-gray-700 block">商品讲解视频</span>} className="mb-8">
+              <div className="flex flex-col gap-4">
+                <div className="p-3 bg-orange-50 border border-orange-100 rounded-lg text-xs text-orange-700">
+                  视频要求：时长 10 秒～5 分钟以内；宽高比为 <strong>9:16</strong>。上传后展示在商详悬浮窗，享受全站流量扶持，下单转化 +20%。
                 </div>
+                <div className="flex flex-wrap gap-3 items-center bg-gray-50 p-4 border border-gray-100 rounded-lg">
+                  <Button icon={<RobotOutlined />}
+                    onClick={() => _generateScript('9:16', setGeneratingExplainScript, setExplainScript, 'explain_script')}
+                    loading={generatingExplainScript} disabled={generatingExplainVideo}
+                    className="text-orange-600 border-orange-300 bg-orange-50 font-bold">
+                    生成分镜脚本（9:16）
+                  </Button>
+                  <Button type="primary" icon={<VideoCameraOutlined />}
+                    onClick={() => _generateSeedanceVideo('9:16', setGeneratingExplainVideo, setExplainVideoProgress, setExplainVideoClips, 'explainVideo')}
+                    loading={generatingExplainVideo} disabled={generatingExplainScript}
+                    className="bg-orange-500 font-bold">
+                    AI 生成视频（Seedance 9:16）
+                  </Button>
+                  {generatingExplainVideo && (
+                    <span className="text-orange-600 font-bold text-xs flex items-center">
+                      <Spin size="small" className="mr-2"/>{explainVideoProgress}
+                      <Button type="text" danger size="small" icon={<CloseCircleOutlined />} className="ml-2"
+                        onClick={() => { abortControllers.current['explainVideo']?.abort(); setGeneratingExplainVideo(false); }} />
+                    </span>
+                  )}
+                  {explainVideoClips.some(v => v !== '') && (
+                    <Button size="small" icon={<DownloadOutlined />} loading={downloading}
+                      onClick={() => { const valid = explainVideoClips.filter(u=>u); if(!valid.length) return; const zip = new JSZip(); const folder = zip.folder('explain_video'); valid.forEach(async (url,i) => { const r = await fetch(`${API_BASE}/api/v1/proxy/download?url=${encodeURIComponent(url)}`); folder?.file(`讲解视频_${i+1}.mp4`, await r.blob()); }); zip.generateAsync({type:'blob'}).then(c => saveAs(c,'explain_videos.zip')); }}
+                      className="text-green-600 border-green-300 bg-green-50 font-bold ml-auto">
+                      打包下载
+                    </Button>
+                  )}
+                </div>
+                {generatingExplainScript && (
+                  <div className="p-4 bg-orange-50 border border-orange-100 rounded-lg flex items-center gap-3 text-orange-700 text-sm">
+                    <Spin size="small" /><span>AI 正在构思 9:16 竖版分镜脚本...</span>
+                  </div>
+                )}
+                {!generatingExplainScript && explainScript && (
+                  <div className="border border-orange-200 rounded-lg overflow-hidden bg-white shadow-sm">
+                    <div className="bg-gradient-to-r from-orange-500 to-red-500 px-4 py-2 flex items-center justify-between">
+                      <span className="text-white font-bold text-sm">📋 分镜脚本（{explainScript.storyboard.length} 个分镜 · 9:16）</span>
+                      <Button size="small" icon={<VideoCameraOutlined />}
+                        onClick={() => _generateLtx(explainScript, setGeneratingExplainLtx, setExplainLtxProgress, setExplainLtxClips)}
+                        loading={generatingExplainLtx} disabled={generatingExplainLtx}
+                        className="bg-white/20 text-white border-white/40 font-bold text-xs">
+                        {generatingExplainLtx ? explainLtxProgress || 'LTX 渲染中...' : '▶ LTX 生成视频（RunPod）'}
+                      </Button>
+                    </div>
+                    <div className="p-3 bg-orange-50/50 border-b border-orange-100">
+                      <span className="text-xs text-orange-500 font-medium">全局风格：</span>
+                      <span className="text-xs text-gray-600 ml-1">{explainScript.global_style_prompt}</span>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto divide-y divide-gray-100">
+                      {explainScript.storyboard.map((shot, idx) => (
+                        <div key={idx} className="flex gap-3 px-4 py-2 hover:bg-gray-50">
+                          <span className="flex-shrink-0 w-5 h-5 bg-orange-100 text-orange-700 rounded-full flex items-center justify-center text-xs font-bold mt-0.5">{idx+1}</span>
+                          <div className="flex-1 min-w-0">
+                            <span className="text-xs font-semibold text-gray-800 block mb-0.5">{shot.logic}</span>
+                            <span className="text-[11px] text-gray-500 break-words">{shot.scene_prompt}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {explainLtxClips.some(v => v !== '') && (
+                      <div className="border-t border-orange-100 p-3 bg-gray-50">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-bold text-gray-700">🎬 LTX 渲染结果（9:16）</span>
+                          <Button size="small" icon={<DownloadOutlined />} loading={downloading}
+                            onClick={() => { explainLtxClips.filter(u=>u).forEach((url,i)=>{ const a=document.createElement('a'); a.href=url; a.download=`explain_ltx_${i+1}.mp4`; a.click(); }); }}
+                            className="text-green-600 border-green-300 bg-green-50 font-bold">打包下载</Button>
+                        </div>
+                        <div className="grid grid-cols-4 lg:grid-cols-6 gap-2">
+                          {explainLtxClips.map((vidUrl, i) => (
+                            <div key={i} className="aspect-[9/16] bg-black border border-gray-200 rounded flex items-center justify-center relative overflow-hidden group">
+                              <span className="absolute top-0.5 left-0.5 bg-black/60 text-white text-[9px] px-1 rounded z-10">{i+1}</span>
+                              {vidUrl ? (
+                                <><video src={vidUrl} controls className="w-full h-full object-cover" />
+                                <div className="absolute top-0.5 right-0.5 opacity-0 group-hover:opacity-100 z-10">
+                                  <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => window.open(vidUrl)} />
+                                </div></>
+                              ) : (
+                                <div className="flex flex-col items-center opacity-40 text-white"><VideoCameraOutlined className="text-sm" /><span className="text-[8px]">LTX</span></div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {explainVideoClips.some(v => v !== '') && (
+                  <div className="grid grid-cols-4 lg:grid-cols-6 gap-3">
+                    {explainVideoClips.filter(v => v).map((vidUrl, i) => (
+                      <div key={i} className="aspect-[9/16] bg-black border border-gray-200 rounded-lg flex items-center justify-center relative overflow-hidden shadow-sm group">
+                        <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] px-1.5 rounded z-10">切片 {i+1}</span>
+                        <video src={vidUrl} controls className="w-full h-full object-cover" />
+                        <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 z-10">
+                          <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => window.open(vidUrl)} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </Form.Item>
+
+            {/* ── 商详视频（16:9，≤3min，展示在商详图文顶部） ── */}
+            <Form.Item label={<span className="font-bold text-gray-700 block">商详视频</span>} className="mb-12">
+              <div className="flex flex-col gap-4">
+                <div className="p-3 bg-teal-50 border border-teal-100 rounded-lg text-xs text-teal-700">
+                  视频要求：时长 3 分钟以内；宽高比为 <strong>16:9</strong>。上传后展示在商详图文详情顶部。
+                </div>
+                <div className="flex flex-wrap gap-3 items-center bg-gray-50 p-4 border border-gray-100 rounded-lg">
+                  <Button icon={<RobotOutlined />}
+                    onClick={() => _generateScript('16:9', setGeneratingDetailScript, setDetailScript, 'detail_script')}
+                    loading={generatingDetailScript} disabled={generatingDetailVideo}
+                    className="text-teal-600 border-teal-300 bg-teal-50 font-bold">
+                    生成分镜脚本（16:9）
+                  </Button>
+                  <Button type="primary" icon={<VideoCameraOutlined />}
+                    onClick={() => _generateSeedanceVideo('16:9', setGeneratingDetailVideo, setDetailVideoProgress, setDetailVideoClips, 'detailVideo')}
+                    loading={generatingDetailVideo} disabled={generatingDetailScript}
+                    className="bg-teal-600 font-bold">
+                    AI 生成视频（Seedance 16:9）
+                  </Button>
+                  {generatingDetailVideo && (
+                    <span className="text-teal-600 font-bold text-xs flex items-center">
+                      <Spin size="small" className="mr-2"/>{detailVideoProgress}
+                      <Button type="text" danger size="small" icon={<CloseCircleOutlined />} className="ml-2"
+                        onClick={() => { abortControllers.current['detailVideo']?.abort(); setGeneratingDetailVideo(false); }} />
+                    </span>
+                  )}
+                  {detailVideoClips.some(v => v !== '') && (
+                    <Button size="small" icon={<DownloadOutlined />} loading={downloading}
+                      onClick={() => { const valid = detailVideoClips.filter(u=>u); if(!valid.length) return; valid.forEach((url,i)=>{ const a=document.createElement('a'); a.href=url; a.download=`detail_video_${i+1}.mp4`; a.click(); }); }}
+                      className="text-green-600 border-green-300 bg-green-50 font-bold ml-auto">
+                      打包下载
+                    </Button>
+                  )}
+                </div>
+                {generatingDetailScript && (
+                  <div className="p-4 bg-teal-50 border border-teal-100 rounded-lg flex items-center gap-3 text-teal-700 text-sm">
+                    <Spin size="small" /><span>AI 正在构思 16:9 横版分镜脚本...</span>
+                  </div>
+                )}
+                {!generatingDetailScript && detailScript && (
+                  <div className="border border-teal-200 rounded-lg overflow-hidden bg-white shadow-sm">
+                    <div className="bg-gradient-to-r from-teal-600 to-cyan-600 px-4 py-2 flex items-center justify-between">
+                      <span className="text-white font-bold text-sm">📋 分镜脚本（{detailScript.storyboard.length} 个分镜 · 16:9）</span>
+                      <Button size="small" icon={<VideoCameraOutlined />}
+                        onClick={() => _generateLtx(detailScript, setGeneratingDetailLtx, setDetailLtxProgress, setDetailLtxClips)}
+                        loading={generatingDetailLtx} disabled={generatingDetailLtx}
+                        className="bg-white/20 text-white border-white/40 font-bold text-xs">
+                        {generatingDetailLtx ? detailLtxProgress || 'LTX 渲染中...' : '▶ LTX 生成视频（RunPod）'}
+                      </Button>
+                    </div>
+                    <div className="p-3 bg-teal-50/50 border-b border-teal-100">
+                      <span className="text-xs text-teal-500 font-medium">全局风格：</span>
+                      <span className="text-xs text-gray-600 ml-1">{detailScript.global_style_prompt}</span>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto divide-y divide-gray-100">
+                      {detailScript.storyboard.map((shot, idx) => (
+                        <div key={idx} className="flex gap-3 px-4 py-2 hover:bg-gray-50">
+                          <span className="flex-shrink-0 w-5 h-5 bg-teal-100 text-teal-700 rounded-full flex items-center justify-center text-xs font-bold mt-0.5">{idx+1}</span>
+                          <div className="flex-1 min-w-0">
+                            <span className="text-xs font-semibold text-gray-800 block mb-0.5">{shot.logic}</span>
+                            <span className="text-[11px] text-gray-500 break-words">{shot.scene_prompt}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {detailLtxClips.some(v => v !== '') && (
+                      <div className="border-t border-teal-100 p-3 bg-gray-50">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-bold text-gray-700">🎬 LTX 渲染结果（16:9）</span>
+                          <Button size="small" icon={<DownloadOutlined />} loading={downloading}
+                            onClick={() => { detailLtxClips.filter(u=>u).forEach((url,i)=>{ const a=document.createElement('a'); a.href=url; a.download=`detail_ltx_${i+1}.mp4`; a.click(); }); }}
+                            className="text-green-600 border-green-300 bg-green-50 font-bold">打包下载</Button>
+                        </div>
+                        <div className="grid grid-cols-4 lg:grid-cols-6 gap-2">
+                          {detailLtxClips.map((vidUrl, i) => (
+                            <div key={i} className="aspect-video bg-black border border-gray-200 rounded flex items-center justify-center relative overflow-hidden group">
+                              <span className="absolute top-0.5 left-0.5 bg-black/60 text-white text-[9px] px-1 rounded z-10">{i+1}</span>
+                              {vidUrl ? (
+                                <><video src={vidUrl} controls className="w-full h-full object-cover" />
+                                <div className="absolute top-0.5 right-0.5 opacity-0 group-hover:opacity-100 z-10">
+                                  <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => window.open(vidUrl)} />
+                                </div></>
+                              ) : (
+                                <div className="flex flex-col items-center opacity-40 text-white"><VideoCameraOutlined className="text-sm" /><span className="text-[8px]">LTX</span></div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {detailVideoClips.some(v => v !== '') && (
+                  <div className="grid grid-cols-4 lg:grid-cols-6 gap-3">
+                    {detailVideoClips.filter(v => v).map((vidUrl, i) => (
+                      <div key={i} className="aspect-video bg-black border border-gray-200 rounded-lg flex items-center justify-center relative overflow-hidden shadow-sm group">
+                        <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] px-1.5 rounded z-10">切片 {i+1}</span>
+                        <video src={vidUrl} controls className="w-full h-full object-cover" />
+                        <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 z-10">
+                          <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => window.open(vidUrl)} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </Form.Item>
 
