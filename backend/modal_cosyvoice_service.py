@@ -29,12 +29,13 @@ cosyvoice_image = (
         "git", "wget", "curl", "ffmpeg", "libsndfile1",
         "build-essential", "cmake",
     )
-    .pip_install(
+    # uv_pip_install 极速安装（比 pip_install 快 3-5x）
+    .uv_pip_install(
         "torch==2.3.1",
         "torchaudio==2.3.1",
-        "--extra-index-url", "https://download.pytorch.org/whl/cu121",
+        extra_options="--extra-index-url https://download.pytorch.org/whl/cu121",
     )
-    .pip_install(
+    .uv_pip_install(
         "fastapi[standard]==0.115.4",
         "numpy==1.26.4",
         "soundfile==0.12.1",
@@ -95,6 +96,7 @@ SPEAKER_MAP = {
     max_containers=2,
     scaledown_window=300,
 )
+@modal.concurrent(max_inputs=4)   # 4 个请求共享一块 A10G 显存
 class CosyVoiceTTS:
 
     @modal.enter()

@@ -37,7 +37,8 @@ video_image = (
         "ffmpeg", "libgl1", "libglib2.0-0",
         "libsm6", "libxext6", "libxrender-dev",
     )
-    .pip_install(
+    # uv_pip_install 极速构建（比 pip_install 快 3-5x）
+    .uv_pip_install(
         # Core ML
         "torch==2.4.0",
         "torchvision==0.19.0",

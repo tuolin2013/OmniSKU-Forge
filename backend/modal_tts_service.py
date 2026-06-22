@@ -1,7 +1,12 @@
 """
 OmniVoice-Studio TTS Service — deployed on Modal.
 
-基于 https://github.com/debpalash/OmniVoice-Studio 的 Kokoro-82M TTS 模型。
+参考 OmniVoice-Studio 官方 demo 模式：
+  - uv_pip_install 极速构建镜像
+  - @modal.concurrent(max_inputs=5) 允许 5 个请求共享一块 A10G 显存
+  - @modal.fastapi_endpoint() 直接暴露 FastAPI 接口（无需 asgi_app wrapper）
+  - Volume 存放模型权重 + 主播参考音频（支持声音克隆）
+
 部署命令：
     modal deploy modal_tts_service.py
 
@@ -14,7 +19,13 @@ URL 规范（与 backend/app/api/v1/tts.py 保持一致）：
 配置（backend/.env）：
     MODAL_TTS_URL=https://tuolin2011--omnivoice-tts-tts-api.modal.run
 
-支持的声音（Kokoro voices）：
+Volume 使用说明：
+    - 上传主播参考音频（WAV 格式）到 Volume /prompts/，文件名即声音 ID
+      例：modal volume put omnivoice-model-cache 李佳琦.wav /prompts/李佳琦.wav
+    - 声音 ID 传入 voice 参数后缀加 "_clone" 即可触发声音克隆
+      例：{ "voice": "李佳琦_clone" }
+
+支持的内置声音（Kokoro voices）：
     中文：zf_xiaobei, zm_yunxi
     英文：af_heart, af_bella, am_adam, bf_emma
 """
@@ -23,13 +34,13 @@ import io
 import modal
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Modal 镜像：安装 kokoro 和依赖
+# 极速构建镜像：uv_pip_install（比 pip_install 快 3-5x）
 # ─────────────────────────────────────────────────────────────────────────────
 
 tts_image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("espeak-ng", "libsndfile1")
-    .pip_install(
+    .uv_pip_install(
         "ordered-set==4.1.0",   # kokoro 隐式依赖
         "misaki[zh]==0.9.4",    # kokoro 中文音素后端
         "kokoro==0.9.4",
@@ -37,197 +48,186 @@ tts_image = (
         "numpy==1.26.4",
         "scipy==1.13.1",
         "fastapi[standard]==0.115.4",
+        "torchaudio",
     )
 )
 
 app = modal.App("omnivoice-tts", image=tts_image)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 模型缓存 Volume（避免每次冷启动重新下载）
+# Volume：模型权重缓存 + 主播参考音频（声音克隆）
 # ─────────────────────────────────────────────────────────────────────────────
 
 model_volume = modal.Volume.from_name("omnivoice-model-cache", create_if_missing=True)
-MODEL_DIR = "/model_cache"
+MODEL_DIR = "/model_cache"   # Kokoro 模型权重（HuggingFace cache）
+PROMPTS_DIR = "/prompts"     # 存放主播参考音频 WAV，文件名即声音 ID
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TTS 推理函数
+# TTS 推理 Class
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.cls(
-    gpu="T4",
-    volumes={MODEL_DIR: model_volume},
-    # 最多 3 个并发实例
+    gpu="A10G",                          # 24G 显存，Kokoro + 可选克隆模型绰绰有余
+    volumes={
+        MODEL_DIR:   model_volume,
+        PROMPTS_DIR: model_volume,       # 同一个 Volume，不同挂载路径
+    },
     max_containers=3,
-    # 闲置 5 分钟后回收
-    scaledown_window=300,
+    scaledown_window=300,                # 5 分钟无请求后回收容器
 )
+@modal.concurrent(max_inputs=5)         # 5 个请求共享一块 A10G，最大化 GPU 利用率
 class KokoroTTS:
-    """Kokoro-82M TTS 推理服务。"""
+    """Kokoro-82M TTS 推理服务。冷启动加载模型后常驻显存。"""
 
     @modal.enter()
     def load_model(self):
-        """冷启动时加载模型（缓存到 Volume 避免重复下载）."""
+        """容器启动时只执行一次，将模型加载到显存中。"""
         import os
         os.makedirs(MODEL_DIR, exist_ok=True)
+        os.makedirs(PROMPTS_DIR, exist_ok=True)
         os.environ["HF_HOME"] = MODEL_DIR
 
+        print("🚀 [冷启动] 正在将 Kokoro-82M 载入 A10G 显存...")
         from kokoro import KPipeline
-        # 首次运行会从 HuggingFace 下载，后续从 Volume 缓存读取
+        # 首次从 HuggingFace 下载，后续从 Volume 缓存读取
         self.pipeline_zh = KPipeline(lang_code="z")   # 中文
         self.pipeline_en = KPipeline(lang_code="a")   # 英文（美式）
+        print("✅ [Kokoro] 模型加载完成。")
 
-    @modal.method()
-    def synthesize(
-        self,
-        text: str,
-        voice: str = "zf_xiaobei",
-        speed: float = 1.0,
-    ) -> bytes:
-        """
-        合成语音，返回 WAV 字节流。
+    # ── 内置声音合成 ──────────────────────────────────────────────────────────
 
-        Args:
-            text:  要合成的文案
-            voice: 声音 ID，中文推荐 zf_xiaobei / zm_yunxi
-            speed: 语速倍率（0.5 ~ 2.0）
-
-        Returns:
-            WAV 格式音频字节
-        """
+    def _synthesize_builtin(self, text: str, voice: str, speed: float) -> bytes:
+        """使用 Kokoro 内置声音合成。"""
         import numpy as np
         import soundfile as sf
 
-        # 根据 voice 前缀选对应 pipeline
-        if voice.startswith("z"):
-            pipeline = self.pipeline_zh
-        else:
-            pipeline = self.pipeline_en
+        pipeline = self.pipeline_zh if voice.startswith("z") else self.pipeline_en
 
         audio_chunks = []
-        # Kokoro KPipeline 按句子流式生成，收集后拼接
         for _, _, audio in pipeline(text, voice=voice, speed=speed, split_pattern=r"\n+"):
             audio_chunks.append(audio)
 
         if not audio_chunks:
             raise ValueError("TTS 生成结果为空，请检查输入文案")
 
-        # 拼接所有音频段，中间加 0.3s 静音分隔
+        # 段落间插入 0.3s 静音
         silence = np.zeros(int(24000 * 0.3), dtype=np.float32)
         combined = audio_chunks[0]
         for chunk in audio_chunks[1:]:
             combined = np.concatenate([combined, silence, chunk])
 
-        # 写入 WAV bytes
         buf = io.BytesIO()
         sf.write(buf, combined, 24000, format="WAV", subtype="PCM_16")
         buf.seek(0)
         return buf.read()
 
+    # ── 声音克隆合成（参考音频在 Volume /prompts/ 下）────────────────────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-# FastAPI Web 端点（供后端直接 HTTP 调用）
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.function()
-@modal.asgi_app()
-def tts_api():
-    """
-    对外暴露 HTTP 接口，供 OmniSKU-Forge 后端调用。
-    部署后 URL 格式：https://<workspace>--omnivoice-tts-api.modal.run
-    """
-    from fastapi import FastAPI, HTTPException
-    from fastapi.responses import StreamingResponse, JSONResponse
-    from pydantic import BaseModel
-
-    web_app = FastAPI(title="OmniVoice TTS API", version="1.0.0")
-
-    class TTSRequest(BaseModel):
-        text: str
-        voice: str = "zf_xiaobei"
-        speed: float = 1.0
-
-    @web_app.get("/health")
-    async def health():
-        return {"status": "ok", "service": "OmniVoice-TTS"}
-
-    @web_app.get("/voices")
-    async def list_voices():
-        return {
-            "voices": [
-                {"id": "zf_xiaobei", "name": "小北（中文女声）", "lang": "zh"},
-                {"id": "zm_yunxi",   "name": "云曦（中文男声）", "lang": "zh"},
-                {"id": "af_heart",   "name": "Heart（英文女声）", "lang": "en"},
-                {"id": "af_bella",   "name": "Bella（英文女声）", "lang": "en"},
-                {"id": "am_adam",    "name": "Adam（英文男声）",  "lang": "en"},
-            ]
-        }
-
-    def _preprocess_zh(text: str) -> str:
+    def _synthesize_clone(self, text: str, voice_id: str, speed: float) -> bytes:
         """
-        为中文 TTS 预处理文本：
-        - 将常见拉丁字母/数字缩写替换为中文发音，避免 Kokoro 中文管线跳过字母
-        - 例：维A → 维阿，维D3 → 维迪三，维E → 维伊
+        使用存放在 Volume /prompts/{voice_id}.wav 的参考音频克隆声音。
+        若参考音频不存在，自动降级到内置 zf_xiaobei。
         """
-        import re
+        import os
+        ref_path = os.path.join(PROMPTS_DIR, f"{voice_id}.wav")
+        if not os.path.exists(ref_path):
+            print(f"⚠️ 参考音频 {ref_path} 不存在，降级到内置 zf_xiaobei")
+            return self._synthesize_builtin(text, "zf_xiaobei", speed)
 
-        # ── 维生素字母扩展 ──
-        vitamin_map = {
-            r'维\s*[Aa][Dd]': '维阿迪',
-            r'维\s*[Dd][Aa]': '维迪阿',
-            r'维\s*[Dd]3':    '维迪三',
-            r'维\s*[Dd]₃':    '维迪三',
-            r'维\s*[Kk]2':    '维科二',
-            r'维\s*[Kk]₂':    '维科二',
-            r'维\s*[Bb]12':   '维比十二',
-            r'维\s*[Bb]₁₂':   '维比十二',
-            r'维\s*[Bb]6':    '维比六',
-            r'维\s*[Bb]₆':    '维比六',
-            r'维\s*[Bb]2':    '维比二',
-            r'维\s*[Bb]1':    '维比一',
-            r'维\s*[Cc]':     '维西',
-            r'维\s*[Dd]':     '维迪',
-            r'维\s*[Ee]':     '维伊',
-            r'维\s*[Kk]':     '维科',
-            r'维\s*[Bb]':     '维比',
-            r'维\s*[Aa]':     '维阿',
-            r'维\s*[Pp]':     '维皮',
-            r'维\s*[Hh]':     '维阿奇',
-        }
-        for pattern, replacement in vitamin_map.items():
-            text = re.sub(pattern, replacement, text)
+        # Kokoro 支持通过 voice 参数传入参考音频路径（v0.9.x）
+        import numpy as np
+        import soundfile as sf
 
-        # ── 常见英文字母缩写（单独大写字母） ──
-        letter_zh = {
-            'A': '阿', 'B': '比', 'C': '西', 'D': '迪', 'E': '伊',
-            'F': '艾夫', 'G': '机', 'H': '艾奇', 'I': '艾', 'J': '杰',
-            'K': '科', 'L': '艾尔', 'M': '艾姆', 'N': '艾恩', 'O': '哦',
-            'P': '皮', 'Q': '扣', 'R': '阿尔', 'S': '艾斯', 'T': '提',
-            'U': '优', 'V': '威', 'W': '双威', 'X': '艾克斯', 'Y': '为',
-            'Z': '贼',
-        }
-        # 仅替换被中文包围或单独出现的大写字母（避免破坏已有词）
-        def replace_isolated_letter(m):
-            return letter_zh.get(m.group(0).upper(), m.group(0))
+        pipeline = self.pipeline_zh  # 克隆模式默认用中文 pipeline
+        audio_chunks = []
+        for _, _, audio in pipeline(text, voice=ref_path, speed=speed, split_pattern=r"\n+"):
+            audio_chunks.append(audio)
 
-        text = re.sub(r'(?<=[^\x00-\x7F])[A-Za-z](?=[^\x00-\x7F])', replace_isolated_letter, text)
-        # 替换末尾孤立字母（如 "维E" 中的 E 如果上面没匹配到）
-        text = re.sub(r'(?<=[^\x00-\x7F])[A-Za-z]+(?=\s|$|[，。！？、；：])', replace_isolated_letter, text)
+        if not audio_chunks:
+            raise ValueError("声音克隆生成结果为空")
 
-        return text
+        silence = np.zeros(int(24000 * 0.3), dtype=np.float32)
+        combined = audio_chunks[0]
+        for chunk in audio_chunks[1:]:
+            combined = np.concatenate([combined, silence, chunk])
 
-    @web_app.post("/tts")
-    async def synthesize(req: TTSRequest):
-        if not req.text.strip():
+        buf = io.BytesIO()
+        sf.write(buf, combined, 24000, format="WAV", subtype="PCM_16")
+        buf.seek(0)
+        return buf.read()
+
+    # ── 统一入口 ──────────────────────────────────────────────────────────────
+
+    @modal.method()
+    def synthesize(self, text: str, voice: str = "zf_xiaobei", speed: float = 1.0) -> bytes:
+        """
+        合成语音，返回 WAV 字节流。
+
+        Args:
+            text:  要合成的文案（≤5000字）
+            voice: 声音 ID。
+                   内置：zf_xiaobei / zm_yunxi / af_heart / af_bella / am_adam
+                   克隆：{voice_id}_clone（需提前上传参考音频到 Volume /prompts/）
+            speed: 语速倍率（0.5 ~ 2.0）
+        """
+        text = _preprocess_zh(text) if not voice.endswith("_clone") and voice.startswith("z") else text
+
+        if voice.endswith("_clone"):
+            voice_id = voice[:-6]  # strip "_clone"
+            return self._synthesize_clone(text, voice_id, speed)
+        return self._synthesize_builtin(text, voice, speed)
+
+    # ── FastAPI endpoints（直接挂载在 Class 上，@modal.concurrent 自动生效）─
+
+    @modal.fastapi_endpoint(method="GET", docs=True)
+    def health(self):
+        return {"status": "ok", "service": "OmniVoice-TTS", "gpu": "A10G"}
+
+    @modal.fastapi_endpoint(method="GET", docs=True)
+    def voices(self):
+        import os
+        builtin = [
+            {"id": "zf_xiaobei", "name": "小北（中文女声）",   "lang": "zh", "type": "builtin"},
+            {"id": "zm_yunxi",   "name": "云曦（中文男声）",   "lang": "zh", "type": "builtin"},
+            {"id": "af_heart",   "name": "Heart（英文女声）",  "lang": "en", "type": "builtin"},
+            {"id": "af_bella",   "name": "Bella（英文女声）",  "lang": "en", "type": "builtin"},
+            {"id": "am_adam",    "name": "Adam（英文男声）",   "lang": "en", "type": "builtin"},
+        ]
+        # 扫描 Volume /prompts/ 目录，列出可克隆的自定义声音
+        clones = []
+        if os.path.isdir(PROMPTS_DIR):
+            for f in sorted(os.listdir(PROMPTS_DIR)):
+                if f.lower().endswith(".wav"):
+                    voice_id = f[:-4]
+                    clones.append({
+                        "id": f"{voice_id}_clone",
+                        "name": f"{voice_id}（克隆）",
+                        "lang": "zh",
+                        "type": "clone",
+                    })
+        return {"voices": builtin + clones}
+
+    @modal.fastapi_endpoint(method="POST", docs=True)
+    def tts(self, req: dict):
+        """
+        合成语音接口。
+        Body: { "text": "...", "voice": "zf_xiaobei", "speed": 1.0 }
+        Response: audio/wav 字节流
+        """
+        from fastapi import HTTPException
+        from fastapi.responses import StreamingResponse
+
+        text  = req.get("text", "").strip()
+        voice = req.get("voice", "zf_xiaobei")
+        speed = float(req.get("speed", 1.0))
+
+        if not text:
             raise HTTPException(status_code=400, detail="text 不能为空")
-        if len(req.text) > 5000:
+        if len(text) > 5000:
             raise HTTPException(status_code=400, detail="文案超过 5000 字符限制")
 
-        # 中文声音做预处理（英文声音不需要）
-        text_to_synth = _preprocess_zh(req.text) if req.voice.startswith("z") else req.text
-
         try:
-            tts = KokoroTTS()
-            wav_bytes = await tts.synthesize.remote.aio(text_to_synth, req.voice, req.speed)
+            wav_bytes = self.synthesize(text, voice, speed)
             return StreamingResponse(
                 io.BytesIO(wav_bytes),
                 media_type="audio/wav",
@@ -239,7 +239,48 @@ def tts_api():
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"TTS 合成失败: {exc}")
 
-    return web_app
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 文本预处理（中文 TTS 字母/数字规范化）
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _preprocess_zh(text: str) -> str:
+    """
+    为中文 TTS 预处理文本：将常见拉丁字母/数字缩写替换为中文发音，
+    避免 Kokoro 中文管线跳过字母（例：维A → 维阿，维D3 → 维迪三）。
+    """
+    import re
+
+    vitamin_map = {
+        r'维\s*[Aa][Dd]': '维阿迪',   r'维\s*[Dd][Aa]': '维迪阿',
+        r'维\s*[Dd]3':    '维迪三',   r'维\s*[Dd]₃':    '维迪三',
+        r'维\s*[Kk]2':    '维科二',   r'维\s*[Kk]₂':    '维科二',
+        r'维\s*[Bb]12':   '维比十二', r'维\s*[Bb]₁₂':   '维比十二',
+        r'维\s*[Bb]6':    '维比六',   r'维\s*[Bb]₆':    '维比六',
+        r'维\s*[Bb]2':    '维比二',   r'维\s*[Bb]1':    '维比一',
+        r'维\s*[Cc]':     '维西',     r'维\s*[Dd]':     '维迪',
+        r'维\s*[Ee]':     '维伊',     r'维\s*[Kk]':     '维科',
+        r'维\s*[Bb]':     '维比',     r'维\s*[Aa]':     '维阿',
+        r'维\s*[Pp]':     '维皮',     r'维\s*[Hh]':     '维阿奇',
+    }
+    for pattern, replacement in vitamin_map.items():
+        text = re.sub(pattern, replacement, text)
+
+    letter_zh = {
+        'A': '阿', 'B': '比', 'C': '西', 'D': '迪', 'E': '伊',
+        'F': '艾夫', 'G': '机', 'H': '艾奇', 'I': '艾', 'J': '杰',
+        'K': '科', 'L': '艾尔', 'M': '艾姆', 'N': '艾恩', 'O': '哦',
+        'P': '皮', 'Q': '扣', 'R': '阿尔', 'S': '艾斯', 'T': '提',
+        'U': '优', 'V': '威', 'W': '双威', 'X': '艾克斯', 'Y': '为',
+        'Z': '贼',
+    }
+
+    def _replace(m):
+        return letter_zh.get(m.group(0).upper(), m.group(0))
+
+    text = re.sub(r'(?<=[^\x00-\x7F])[A-Za-z](?=[^\x00-\x7F])', _replace, text)
+    text = re.sub(r'(?<=[^\x00-\x7F])[A-Za-z]+(?=\s|$|[，。！？、；：])', _replace, text)
+    return text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -248,10 +289,18 @@ def tts_api():
 
 @app.local_entrypoint()
 def main():
-    """modal run modal_tts_service.py"""
-    tts = KokoroTTS()
+    """
+    modal run modal_tts_service.py
+
+    可选参数（传给 synthesize）：
+        modal run modal_tts_service.py --voice zm_yunxi
+    """
+    import sys
+    voice = sys.argv[1] if len(sys.argv) > 1 else "zf_xiaobei"
     test_text = "这款茶叶精选云南古树普洱，回甘持久，香气馥郁，是送礼自饮的绝佳之选。"
-    wav = tts.synthesize.remote(test_text, voice="zf_xiaobei", speed=1.0)
-    with open("test_output.wav", "wb") as f:
+    tts = KokoroTTS()
+    wav = tts.synthesize.remote(test_text, voice=voice, speed=1.0)
+    out = f"test_output_{voice}.wav"
+    with open(out, "wb") as f:
         f.write(wav)
-    print(f"✅ 测试完成，已保存 test_output.wav（{len(wav)} bytes）")
+    print(f"✅ 测试完成，已保存 {out}（{len(wav):,} bytes）")
