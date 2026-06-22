@@ -655,12 +655,14 @@ export default function TaobaoPublish() {
     setVideoRenderProgress("构思视频剧本中...");
     
     abortControllers.current['video'] = new AbortController();
+    let wsRef: WebSocket | null = null;
 
     try {
       // 1. 获取剧本
       const scriptRes = await fetch(`${API_BASE}/api/v1/video/design-script`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: abortControllers.current['video']?.signal,
         body: JSON.stringify({ pm_report: pmReport, ops_report: opsReport, platform: 'taobao' })
       });
       
@@ -673,49 +675,100 @@ export default function TaobaoPublish() {
 
       const numClips = parsedData.storyboard.length || 12;
       setVideoClips(Array(numClips).fill(''));
-      const updatedClips = Array(numClips).fill('');
+      const updatedClips: string[] = Array(numClips).fill('');
 
-      // 2. 逐个生成视频切片
-      for (let i = 0; i < numClips; i++) {
-        if (abortControllers.current['video']?.signal.aborted) break;
+      setVideoRenderProgress(`连接渲染节点...`);
 
-        const scene = parsedData.storyboard[i];
-        setVideoRenderProgress(`生成视频切片 ${i + 1}/${numClips}...`);
+      // 2. 通过 WebSocket 逐条生成（避免 HTTP 超时）
+      await new Promise<void>((resolve, reject) => {
+        const wsUrl = API_BASE
+          .replace(/^https:\/\//, 'wss://')
+          .replace(/^http:\/\//, 'ws://');
         
-        try {
-          const videoRes = await fetch(`${API_BASE}/api/v1/video/generate`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: abortControllers.current['video']?.signal,
-            body: JSON.stringify({ 
-              prompt: `${parsedData.global_style_prompt}, ${scene.scene_prompt}`, 
-              type: 'taobao_main',
-              image_urls: selectedR2Images,
-            })
-          });
-          
-          const videoData = await videoRes.json();
-          if (videoRes.ok && videoData.url) {
-            updatedClips[i] = videoData.url;
-            setVideoClips([...updatedClips]);
-          } else {
-             message.warning(`切片 ${i+1} 生成失败，跳过`);
+        const ws = new WebSocket(`${wsUrl}/api/v1/video/ws/generate-from-script`);
+        wsRef = ws;
+
+        ws.onopen = () => {
+          // 发送完整分镜请求
+          ws.send(JSON.stringify({
+            global_style_prompt: parsedData.global_style_prompt || '',
+            ratio: '16:9',
+            storyboard: parsedData.storyboard.map((scene: any) => ({
+              logic: scene.logic || scene.scene_prompt,
+              scene_prompt: scene.scene_prompt,
+              video_type: selectedR2Images.length > 0 ? 'image-to-video' : 'text-to-video',
+            })),
+            image_urls: selectedR2Images,
+            num_frames: 97,
+            steps: 50,
+            fast: false,
+          }));
+        };
+
+        ws.onmessage = (event) => {
+          // Check abort signal
+          if (abortControllers.current['video']?.signal.aborted) {
+            ws.close();
+            resolve();
+            return;
           }
-        } catch (err: any) {
-          if (err.name === 'AbortError') break;
-          console.error(err);
-        }
-      }
-      
+
+          try {
+            const msg = JSON.parse(event.data);
+
+            if (msg.type === 'init') {
+              setVideoRenderProgress(`开始渲染 ${msg.total} 个分镜...`);
+
+            } else if (msg.type === 'progress') {
+              updatedClips[msg.index] = msg.url;
+              setVideoClips([...updatedClips]);
+              setVideoRenderProgress(`✅ 分镜 ${msg.index + 1}/${msg.total} 完成`);
+
+            } else if (msg.type === 'error') {
+              updatedClips[msg.index] = '';
+              setVideoRenderProgress(`⚠️ 分镜 ${msg.index + 1}/${msg.total} 失败，继续下一条...`);
+
+            } else if (msg.type === 'done') {
+              message.success(`视频渲染完成！成功 ${msg.success} / 失败 ${msg.failed}`);
+              resolve();
+
+            } else if (msg.type === 'fatal') {
+              reject(new Error(msg.error));
+            }
+          } catch (e) {
+            console.error('[ws_video] parse error', e);
+          }
+        };
+
+        ws.onerror = (e) => {
+          reject(new Error('WebSocket 连接失败，请检查后端服务'));
+        };
+
+        ws.onclose = (e) => {
+          if (!e.wasClean && e.code !== 1000) {
+            reject(new Error(`WebSocket 异常断开 (code=${e.code})`));
+          } else {
+            resolve();
+          }
+        };
+
+        // 监听 abort 信号
+        abortControllers.current['video']?.signal.addEventListener('abort', () => {
+          ws.close(1000, '用户手动终止');
+          resolve();
+        });
+      });
+
       if (abortControllers.current['video']?.signal.aborted) {
-        message.warning(`视频生成已手动终止`);
-      } else {
-        message.success(`视频剧本分镜渲染完成！`);
+        message.warning('视频生成已手动终止');
       }
 
     } catch (error: any) {
-      message.error(`视频生成中断: ${error.message}`);
+      if (error.name !== 'AbortError') {
+        message.error(`视频生成中断: ${error.message}`);
+      }
     } finally {
+      wsRef = null;
       setGeneratingVideo(false);
       setVideoRenderProgress("");
       abortControllers.current['video'] = null;

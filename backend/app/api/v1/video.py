@@ -1,9 +1,13 @@
 import asyncio
+import json
+import logging
 import threading
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from app.api.core.services.video_engine import generate_video
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -354,6 +358,165 @@ def _generate_storyboard_modal(
         return [f"❌ Modal 返回的 ZIP 文件损坏：{e}"] * len(shots)
 
     return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WebSocket：实时流式视频生成（解决 HTTP 60 分钟超时问题）
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.websocket("/ws/generate-from-script")
+async def ws_generate_from_script(websocket: WebSocket):
+    """
+    WebSocket 端点：逐条生成视频分镜，每完成一条立即推送结果。
+
+    客户端发送单条 JSON 消息（与 ScriptToVideoRequest 相同格式），
+    服务端推送以下消息：
+
+        { "type": "init",     "total": 12 }
+        { "type": "progress", "index": 0, "total": 12, "url": "https://..." }
+        { "type": "error",    "index": 0, "total": 12, "error": "❌..." }
+        { "type": "done",     "success": 10, "failed": 2 }
+        { "type": "fatal",    "error": "..." }   ← 如果在开始前出现不可恢复错误
+
+    这样无论渲染多少条，WebSocket 连接保持活跃，不会触发任何 HTTP 超时。
+    """
+    await websocket.accept()
+
+    try:
+        raw = await websocket.receive_text()
+        body_dict = json.loads(raw)
+        body = ScriptToVideoRequest(**body_dict)
+    except Exception as exc:
+        await websocket.send_text(json.dumps({"type": "fatal", "error": f"解析请求失败: {exc}"}))
+        await websocket.close()
+        return
+
+    # ── 准备参考图 base64 ────────────────────────────────────────────────────
+    from app.api.core.services.ltx_video_engine import (
+        generate_storyboard_ltx,
+        _urls_to_base64_list,
+        _RATIO_SIZES,
+        _nearest_4n_plus_1,
+        _nearest_8n_plus_1,
+        LTX_VIDEO_BASE_URL,
+        MODAL_VIDEO_URL,
+        generate_storyboard_ltx_async,
+    )
+    from app.api.core.services.storage import r2
+
+    ref_images_b64: List[str] = []
+    if body.image_urls:
+        try:
+            ref_images_b64 = await asyncio.to_thread(_urls_to_base64_list, body.image_urls)
+            _log.info("[ws_video] 已下载 %d 张参考图转 base64", len(ref_images_b64))
+        except Exception as exc:
+            _log.warning("[ws_video] 参考图下载失败: %s", exc)
+
+    width, height = _RATIO_SIZES.get(body.ratio, (1280, 720))
+    num_frames = _nearest_8n_plus_1(body.num_frames) if body.fast else _nearest_4n_plus_1(body.num_frames)
+    total = len(body.storyboard)
+
+    await websocket.send_text(json.dumps({"type": "init", "total": total}))
+
+    use_modal = (not LTX_VIDEO_BASE_URL) and bool(MODAL_VIDEO_URL)
+
+    # ── 逐条生成 ────────────────────────────────────────────────────────────
+    success_count = 0
+    failed_count = 0
+
+    for i, shot in enumerate(body.storyboard):
+        # Check if client disconnected
+        try:
+            # Non-blocking check — receive with very short timeout
+            await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
+        except asyncio.TimeoutError:
+            pass  # normal — no message from client
+        except WebSocketDisconnect:
+            _log.info("[ws_video] 客户端断开，终止生成 (shot %d/%d)", i, total)
+            return
+        except Exception:
+            pass
+
+        full_prompt = (
+            f"{body.global_style_prompt}, {shot.scene_prompt}".strip(", ")
+            if body.global_style_prompt
+            else shot.scene_prompt
+        )
+        shot_dict: dict = {
+            "prompt": full_prompt,
+            "negative_prompt": "worst quality, inconsistent motion, blurry, jittery, distorted",
+            "num_frames": num_frames,
+            "num_inference_steps": body.steps,
+            "height": height,
+            "width": width,
+            "fps": 24,
+            "fast": body.fast,
+            "background_style": body.background_style,
+        }
+        if shot.video_type == "image-to-video" and ref_images_b64:
+            shot_dict["reference_images"] = ref_images_b64
+
+        try:
+            # Each shot has its own generous timeout (15 min for Wan2.2 high-quality)
+            if use_modal:
+                url_list = await asyncio.wait_for(
+                    asyncio.to_thread(_generate_storyboard_modal, [shot_dict], num_frames, body.steps),
+                    timeout=900,
+                )
+                url = url_list[0]
+            else:
+                # RunPod: use the async poll approach for each shot
+                url_list = await asyncio.wait_for(
+                    asyncio.to_thread(generate_storyboard_ltx_async, [shot_dict], num_frames, body.steps),
+                    timeout=900,
+                )
+                url = url_list[0]
+
+            if url.startswith("❌"):
+                failed_count += 1
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "index": i,
+                    "total": total,
+                    "logic": shot.logic,
+                    "error": url,
+                }))
+            else:
+                success_count += 1
+                await websocket.send_text(json.dumps({
+                    "type": "progress",
+                    "index": i,
+                    "total": total,
+                    "logic": shot.logic,
+                    "url": url,
+                }))
+
+        except asyncio.TimeoutError:
+            failed_count += 1
+            err = f"❌ 分镜 {i+1} 渲染超时（超过15分钟）"
+            _log.warning("[ws_video] %s", err)
+            await websocket.send_text(json.dumps({
+                "type": "error", "index": i, "total": total,
+                "logic": shot.logic, "error": err,
+            }))
+        except WebSocketDisconnect:
+            _log.info("[ws_video] 客户端断开，终止生成 (shot %d/%d)", i + 1, total)
+            return
+        except Exception as exc:
+            failed_count += 1
+            err = f"❌ 分镜 {i+1} 异常: {exc}"
+            _log.error("[ws_video] %s", err)
+            await websocket.send_text(json.dumps({
+                "type": "error", "index": i, "total": total,
+                "logic": shot.logic, "error": err,
+            }))
+
+    await websocket.send_text(json.dumps({
+        "type": "done",
+        "success": success_count,
+        "failed": failed_count,
+    }))
+    await websocket.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
