@@ -17,10 +17,14 @@ from io import BytesIO
 
 from app.api.core.services.knowledge_base import product_db
 from app.api.routers import catalog
-from app.api.v1 import video, agents, r2
+from app.api.v1 import video, agents, r2, tts
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
+
+# 客户端提前断开连接时 asyncio 会产生 "socket.send() raised exception"
+# 这是正常的网络行为（用户刷新/关闭页面），降到 DEBUG 避免污染日志
+logging.getLogger("asyncio").setLevel(logging.DEBUG)
 
 
 # ------------------------------------------------------------------ #
@@ -65,6 +69,7 @@ app.include_router(catalog.router, prefix="/api/catalog", tags=["catalog"])
 app.include_router(video.router, prefix="/api/v1/video", tags=["video"])
 app.include_router(agents.router)   # 前缀已在模块内定义
 app.include_router(r2.router)       # 前缀已在模块内定义
+app.include_router(tts.router)      # 前缀已在模块内定义
 
 
 # ------------------------------------------------------------------ #

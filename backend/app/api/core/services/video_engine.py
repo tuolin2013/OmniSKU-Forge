@@ -8,6 +8,7 @@ Volcengine Ark Seedance 视频生成引擎。
 
 import os
 import time
+import threading
 import logging
 import requests
 from dotenv import load_dotenv
@@ -35,15 +36,20 @@ _POLL_INTERVAL_S = 5
 _MAX_POLL_ATTEMPTS = 120  # 最多等待 10 分钟
 
 
-def generate_video(prompt: str, image_urls: list[str] | None = None) -> str:
+def generate_video(
+    prompt: str,
+    image_urls: list[str] | None = None,
+    stop_event: threading.Event | None = None,
+) -> str:
     """
     提交 Seedance 视频生成任务并轮询结果，返回视频 URL。
 
     Args:
-        prompt:     视频生成提示词（英文效果更佳）
-        image_urls: 产品参考图 URL 列表。
-                    - 传入时：取第一张作为首帧，实现图生视频，保持产品外观一致。
-                    - 不传或为空：纯文生视频。
+        prompt:      视频生成提示词（英文效果更佳）
+        image_urls:  产品参考图 URL 列表。
+                     - 传入时：取第一张作为首帧，实现图生视频，保持产品外观一致。
+                     - 不传或为空：纯文生视频。
+        stop_event:  threading.Event，外部设置后轮询提前退出（客户端断开时使用）。
 
     Returns:
         成功时返回视频 URL 字符串；失败时返回以 "❌" 开头的错误描述。
@@ -100,7 +106,21 @@ def generate_video(prompt: str, image_urls: list[str] | None = None) -> str:
     # ---- Step 2：轮询任务状态 ----
     poll_url = f"{SEEDANCE_BASE_URL}/{task_id}"
     for attempt in range(1, _MAX_POLL_ATTEMPTS + 1):
-        time.sleep(_POLL_INTERVAL_S)
+        # 客户端断开或外部取消时提前退出，不继续白跑
+        if stop_event is not None and stop_event.is_set():
+            logger.info("[VideoEngine] Task %s 轮询被外部取消（客户端已断开）", task_id)
+            return "❌ 视频生成已取消"
+
+        # 分段 sleep，每秒检查一次 stop_event，响应更及时
+        for _ in range(_POLL_INTERVAL_S):
+            if stop_event is not None and stop_event.is_set():
+                break
+            time.sleep(1)
+
+        if stop_event is not None and stop_event.is_set():
+            logger.info("[VideoEngine] Task %s 轮询被外部取消", task_id)
+            return "❌ 视频生成已取消"
+
         try:
             poll_resp = requests.get(poll_url, headers=headers, timeout=15)
         except requests.exceptions.RequestException as exc:
@@ -133,4 +153,4 @@ def generate_video(prompt: str, image_urls: list[str] | None = None) -> str:
             return f"❌ 视频生成失败: {error_msg}"
 
     logger.error("[VideoEngine] 任务 %s 轮询超时", task_id)
-    return "❌ 视频生成超时（超过10分钟）"
+    return "❌ 视频生成超时（超过5分钟）"

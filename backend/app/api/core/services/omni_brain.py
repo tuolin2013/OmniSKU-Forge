@@ -744,40 +744,65 @@ class OmniBrain(BaseBrain):
         mark = chr(96) * 3 
         return response.replace(mark + "json", "").replace(mark, "").strip()
 
-    def run_designer_video_script(self, pm_report: str, ops_report: str, platform: str) -> str:
+    def run_designer_video_script(
+        self,
+        pm_report: str,
+        ops_report: str,
+        platform: str,
+        ratio: str = "16:9",
+        num_clips: int = 12,
+    ) -> str:
+        # 根据宽高比决定画面方向描述
+        orientation_desc = "Vertical 9:16" if ratio == "9:16" else "Horizontal 16:9"
+        # 每个分镜时长（秒）= 总时长 / 分镜数，总时长由 num_clips*5 估算
+        clip_duration = 5
+        total_duration = num_clips * clip_duration
+
         prompt = f"""
-        Role: 抖音/短视频平台百万粉丝级视频编导与视觉总监。
-        Task: 根据给定的【图文策划案】与【老板意图】，策划一份包含 12 个分镜的“60秒高转化短视频剧本”。
-        
+        Role: 电商平台百万粉丝级视频编导与视觉总监。
+        Task: 根据给定的【图文策划案】与【老板意图】，策划一份包含 {num_clips} 个分镜的"{total_duration}秒高转化商品视频剧本"。
+
         【图文策划案】: {pm_report}
         【老板意图】: {ops_report}
         【目标平台】: {platform}
-        
+        【画面规格】: {ratio} 比例（{orientation_desc}），每个分镜约 {clip_duration} 秒
+
         要求：
-        1. 必须输出 12 个分镜，每个分镜大约对应 5 秒的视频画面，总长正好 60 秒。
-        2. `scene_prompt` 必须翻译为纯英文，且符合最新视频生成大模型（如 Sora、Seedance 等）的提示词规范。
-        3. 请强调镜头的运镜方式（如 Pan right, Zoom in, Slow motion 等）。
-        4. 严格输出合法的 JSON 格式，绝不能包含 Markdown 标记符。
+        1. 必须输出 {num_clips} 个分镜，每个分镜约 {clip_duration} 秒，总时长约 {total_duration} 秒。
+        2. `scene_prompt` 必须是纯英文，符合 LTX-Video / Sora / Seedance 等视频生成大模型的提示词规范。
+        3. 每条 scene_prompt 开头必须注明画面方向，例如 "{orientation_desc} video."。
+        4. 请强调运镜方式（Pan right, Zoom in, Slow motion, Dolly shot 等）。
+        5. 每个分镜必须判断该镜头是否需要产品实物出镜，并填写 `video_type` 字段：
+           - "image-to-video"：需要产品实物出镜（如产品特写、开箱展示、使用场景带产品），渲染时将使用产品实拍图作为参考帧
+           - "text-to-video"：纯场景/人物/情绪镜头，无需产品出镜（如痛点描述、生活场景、结尾感情渲染）
+        6. 严格输出合法 JSON，绝不能包含任何 Markdown 标记符。
 
         输出格式：
         {{
-            "global_style_prompt": "Cinematic lighting, 4k resolution, photorealistic, highly detailed, professional commercial video style.",
+            "global_style_prompt": "{orientation_desc} video, e-commerce commercial style, photorealistic, 4k resolution, highly detailed.",
+            "ratio": "{ratio}",
             "storyboard": [
                 {{
-                    "logic": "前3秒黄金定场：痛点共鸣",
-                    "scene_prompt": "A close up shot of... (纯英文视频生成提示词)"
+                    "logic": "前{clip_duration}秒黄金钩子：痛点共鸣",
+                    "scene_prompt": "{orientation_desc} video. A close up shot of... (纯英文视频生成提示词)",
+                    "video_type": "text-to-video"
                 }},
-                ... (共需输出 12 个)
+                {{
+                    "logic": "产品强势登场",
+                    "scene_prompt": "{orientation_desc} video. Hero shot of the product packaging...",
+                    "video_type": "image-to-video"
+                }},
+                ... (共需输出 {num_clips} 个)
             ]
         }}
-        说明：必须且只能生成 12 个分镜。
+        说明：必须且只能生成 {num_clips} 个分镜，每条都必须包含 video_type 字段。
         """
         response = self._call_llm(prompt)
-        
+
         if response.startswith("❌"):
             raise ValueError(response)
-            
-        mark = chr(96) * 3 
+
+        mark = chr(96) * 3
         return response.replace(mark + "json", "").replace(mark, "").strip()
 
     def run_designer_buyer_show(self, count: int, pm_report: str, ops_report: str) -> str:

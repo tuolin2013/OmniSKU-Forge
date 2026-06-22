@@ -5,7 +5,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Select, message, Divider, Modal, Spin, Upload, Image, Cascader } from 'antd';
 import { 
   RobotOutlined, PictureOutlined, ThunderboltOutlined, 
-  VideoCameraOutlined, CloudOutlined, UploadOutlined, RocketOutlined, EditOutlined, DownloadOutlined, CloseCircleOutlined, LoadingOutlined
+  VideoCameraOutlined, CloudOutlined, UploadOutlined, RocketOutlined, EditOutlined, DownloadOutlined, CloseCircleOutlined, LoadingOutlined,
+  SoundOutlined, CustomerServiceOutlined
 } from '@ant-design/icons';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
@@ -143,10 +144,67 @@ const TEXT_MODELS = [
   const [detailLtxProgress, setDetailLtxProgress] = useState("");
   const [detailLtxClips, setDetailLtxClips] = useState<string[]>(Array(12).fill(''));
 
+  // ── LTX/Wan2.2 渲染模式 ──
+  // fast=false → Wan2.2 正式出片（高质量，每条~60s）
+  // fast=true  → LTX-Video 快速预览（每条~8s）
+  const [ltxFastMode, setLtxFastMode] = useState(false);
+  const [ltxBackgroundStyle, setLtxBackgroundStyle] = useState<string>('gradient');
+
   const [generatingDetails, setGeneratingDetails] = useState(false);
   const [detailImages, setDetailImages] = useState<string[]>([]);
   const [downloading, setDownloading] = useState(false);
   const [downloadingDetails, setDownloadingDetails] = useState(false);
+
+  // 🎙️ 口播文案 & TTS 状态
+  const [extractingScript, setExtractingScript] = useState(false);
+  const [broadcastScript, setBroadcastScript] = useState('');
+  const [ttsVoice, setTtsVoice] = useState('zf_xiaobei');
+  const [ttsSpeed, setTtsSpeed] = useState(1.0);
+  const [generatingTts, setGeneratingTts] = useState(false);
+  const [ttsVoiceUrl, setTtsVoiceUrl] = useState('');
+  const ttsVoices = [
+    { id: 'zf_xiaobei', name: '小北（中文女声）' },
+    { id: 'zm_yunxi',   name: '云曦（中文男声）' },
+    { id: 'af_heart',   name: 'Heart（英文女声）' },
+    { id: 'af_bella',   name: 'Bella（英文女声）' },
+    { id: 'am_adam',    name: 'Adam（英文男声）'  },
+  ];
+  // TTS 服务部署状态（从 /api/v1/tts/status 获取）
+  const [ttsStatus, setTtsStatus] = useState<{ kokoro: boolean; cosyvoice: boolean; emotivoice: boolean }>({ kokoro: false, cosyvoice: false, emotivoice: false });
+  useEffect(() => {
+    fetch(`${API_BASE}/api/v1/tts/status`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.code === 200) setTtsStatus({ kokoro: d.data.kokoro.ready, cosyvoice: d.data.cosyvoice.ready, emotivoice: d.data.emotivoice.ready });
+      })
+      .catch(() => {});
+  }, []);
+
+  // CosyVoice 2
+  const [generatingCosyVoice, setGeneratingCosyVoice] = useState(false);
+  const [cosyVoiceSpeaker, setCosyVoiceSpeaker] = useState('中文女声');
+  const [cosyVoiceEmotion, setCosyVoiceEmotion] = useState('neutral');
+  const [cosyVoiceUrl, setCosyVoiceUrl] = useState('');
+  // EmotiVoice
+  const [generatingEmotiVoice, setGeneratingEmotiVoice] = useState(false);
+  const [emotiVoiceSpeaker, setEmotiVoiceSpeaker] = useState('中文女声A');
+  const [emotiVoiceEmotion, setEmotiVoiceEmotion] = useState('neutral');
+  const [emotiVoiceUrl, setEmotiVoiceUrl] = useState('');
+
+  const EMOTION_OPTIONS = [
+    { value: 'neutral',   label: '😐 平静' },
+    { value: 'happy',     label: '😊 开心' },
+    { value: 'excited',   label: '🤩 激动兴奋' },
+    { value: 'sad',       label: '😢 悲伤' },
+    { value: 'angry',     label: '😠 生气' },
+    { value: 'tender',    label: '🥰 温柔' },
+    { value: 'lively',    label: '💃 活泼热情' },
+    { value: 'calm',      label: '🧘 平静沉稳' },
+    { value: 'whisper',   label: '🤫 轻声耳语' },
+    { value: 'confident', label: '💪 自信' },
+    { value: 'warm',      label: '🤗 亲切温暖' },
+    { value: 'serious',   label: '🎯 严肃专业' },
+  ];
 
   // === 🚀 全局任务状态收集 ===
   const activeTasks = [
@@ -571,9 +629,10 @@ const TEXT_MODELS = [
   const _generateLtxFromScript = async () => {
     if (!script || script.storyboard.length === 0) { message.warning('请先生成分镜脚本'); return; }
     setGeneratingLtx(true);
-    setLtxProgress('准备提交 LTX-Video...');
     const total = script.storyboard.length;
     setLtxClips(Array(total).fill(''));
+    const modeLabel = ltxFastMode ? 'LTX-Video 快速预览' : 'Wan2.2 正式出片';
+    setLtxProgress(`正在提交 ${total} 个分镜到 RunPod（${modeLabel}），请耐心等待渲染完成...`);
     try {
       const res = await fetch(`${API_BASE}/api/v1/video/generate-from-script`, {
         method: 'POST',
@@ -587,6 +646,10 @@ const TEXT_MODELS = [
             video_type: s.video_type || 'text-to-video',
           })),
           image_urls: selectedR2Images,
+          num_frames: ltxFastMode ? 25 : 97,
+          steps: ltxFastMode ? 20 : 50,
+          fast: ltxFastMode,
+          background_style: ltxBackgroundStyle,
         }),
       });
       if (!res.ok) throw new Error(`LTX 接口异常 (HTTP ${res.status})`);
@@ -599,7 +662,7 @@ const TEXT_MODELS = [
         });
         setLtxClips(newClips);
         const ok = data.success_count, fail = data.failed_count;
-        if (fail === 0) message.success('LTX 全部渲染完毕！');
+        if (fail === 0) message.success(`🎬 LTX 全部 ${ok} 个视频渲染完毕！`);
         else message.warning(`渲染结束：${ok} 成功，${fail} 失败`);
       } else {
         throw new Error(data.detail || '后端返回异常');
@@ -1281,9 +1344,10 @@ const TEXT_MODELS = [
   ) => {
     if (!scriptState || scriptState.storyboard.length === 0) { message.warning('请先生成分镜脚本'); return; }
     setGenerating(true);
-    setProgress('准备提交 LTX-Video（RunPod）...');
     const total = scriptState.storyboard.length;
     setClips(Array(total).fill(''));
+    const modeLabel = ltxFastMode ? 'LTX-Video 快速预览' : 'Wan2.2 正式出片';
+    setProgress(`正在提交 ${total} 个分镜到 RunPod（${modeLabel}），请耐心等待渲染完成...`);
     try {
       const res = await fetch(`${API_BASE}/api/v1/video/generate-from-script`, {
         method: 'POST',
@@ -1297,6 +1361,10 @@ const TEXT_MODELS = [
             video_type: s.video_type || 'text-to-video',
           })),
           image_urls: selectedR2Images,
+          num_frames: ltxFastMode ? 25 : 97,
+          steps: ltxFastMode ? 20 : 50,
+          fast: ltxFastMode,
+          background_style: ltxBackgroundStyle,
         }),
       });
       if (!res.ok) throw new Error(`LTX 接口异常 (HTTP ${res.status})`);
@@ -1309,7 +1377,7 @@ const TEXT_MODELS = [
         });
         setClips(newClips);
         const fail = data.failed_count;
-        if (fail === 0) message.success('LTX 全部渲染完毕！');
+        if (fail === 0) message.success(`🎬 LTX 全部 ${data.success_count} 个视频渲染完毕！`);
         else message.warning(`渲染结束：${data.success_count} 成功，${fail} 失败`);
       } else {
         throw new Error(data.detail || '后端返回异常');
@@ -1376,6 +1444,98 @@ const TEXT_MODELS = [
     }
   };
 
+  // 🎙️ 提取口播文案
+  const handleExtractScript = async () => {
+    const pmReport = form.getFieldValue('pm_report');
+    if (!pmReport) return message.warning('请先生成策划案！');
+    setExtractingScript(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/tts/extract-script`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pm_report: pmReport, platform: 'pinduoduo' }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.code === 200 && data.data) {
+        setBroadcastScript(typeof data.data === 'string' ? data.data : data.data.script || '');
+        message.success('口播文案提取成功！');
+      } else {
+        throw new Error(data.message || '提取失败');
+      }
+    } catch (err: any) {
+      message.error(`提取口播文案失败: ${err.message}`);
+    } finally {
+      setExtractingScript(false);
+    }
+  };
+
+  // 🎭 CosyVoice 2 合成
+  const handleGenerateCosyVoice = async () => {
+    if (!broadcastScript.trim()) return message.warning('请先提取或输入口播文案！');
+    setGeneratingCosyVoice(true);
+    setCosyVoiceUrl('');
+    message.loading({ content: '🎭 CosyVoice 2 合成中（约30~90秒）...', key: 'cosy_gen', duration: 0 });
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/tts/generate-cosyvoice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: broadcastScript, speaker: cosyVoiceSpeaker, emotion: cosyVoiceEmotion, speed: ttsSpeed, product_name: selectedSkuName || 'product' }),
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `HTTP ${res.status}`); }
+      const data = await res.json();
+      if (data.code === 200 && data.data?.url) { setCosyVoiceUrl(data.data.url); message.success({ content: '🎉 CosyVoice 合成完成！已存入 R2 voice/', key: 'cosy_gen' }); }
+      else throw new Error(data.detail || '合成失败');
+    } catch (err: any) { message.error({ content: `CosyVoice 失败: ${err.message}`, key: 'cosy_gen' }); }
+    finally { setGeneratingCosyVoice(false); }
+  };
+
+  // 🎭 EmotiVoice 合成
+  const handleGenerateEmotiVoice = async () => {
+    if (!broadcastScript.trim()) return message.warning('请先提取或输入口播文案！');
+    setGeneratingEmotiVoice(true);
+    setEmotiVoiceUrl('');
+    message.loading({ content: '🎭 EmotiVoice 合成中（约30~90秒）...', key: 'emoti_gen', duration: 0 });
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/tts/generate-emotivoice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: broadcastScript, speaker: emotiVoiceSpeaker, emotion: emotiVoiceEmotion, speed: ttsSpeed, product_name: selectedSkuName || 'product' }),
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `HTTP ${res.status}`); }
+      const data = await res.json();
+      if (data.code === 200 && data.data?.url) { setEmotiVoiceUrl(data.data.url); message.success({ content: '🎉 EmotiVoice 合成完成！已存入 R2 voice/', key: 'emoti_gen' }); }
+      else throw new Error(data.detail || '合成失败');
+    } catch (err: any) { message.error({ content: `EmotiVoice 失败: ${err.message}`, key: 'emoti_gen' }); }
+    finally { setGeneratingEmotiVoice(false); }
+  };
+
+  // 🎙️ 生成 TTS 语音并存入 R2
+  const handleGenerateTts = async () => {
+    if (!broadcastScript.trim()) return message.warning('请先输入或提取口播文案！');
+    setGeneratingTts(true);
+    message.loading({ content: '语音合成中，请稍候...', key: 'tts_gen', duration: 0 });
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/tts/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: broadcastScript, voice: ttsVoice, speed: ttsSpeed }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.code === 200 && data.data?.url) {
+        setTtsVoiceUrl(data.data.url);
+        message.success({ content: '语音生成成功，已存入 R2！', key: 'tts_gen', duration: 3 });
+      } else {
+        throw new Error(data.message || '生成失败');
+      }
+    } catch (err: any) {
+      message.error({ content: `语音生成失败: ${err.message}`, key: 'tts_gen', duration: 4 });
+    } finally {
+      setGeneratingTts(false);
+    }
+  };
+
   const handleDownloadSkuImages = async () => {
     const validImages = skuImages.filter(url => url);
     if (validImages.length === 0) return message.warning('没有可下载的SKU图！');
@@ -1404,14 +1564,18 @@ const TEXT_MODELS = [
   };
 
   return (
-    <div className="h-full bg-[#f8f9fa] flex flex-col text-[#333]">
-      <div className="flex-1 overflow-y-auto p-8">
-        <div className="max-w-5xl mx-auto bg-white p-8 rounded-xl shadow-sm border border-gray-100">
+    <div className="h-full bg-gradient-to-br from-slate-50 to-red-50/20 flex flex-col text-[#333]">
+      <div className="flex-1 overflow-y-auto p-6">
+        <div className="max-w-5xl mx-auto bg-white p-8 rounded-2xl shadow-md border border-red-100/50">
           <Form form={form} layout="horizontal" labelCol={{ span: 3 }} wrapperCol={{ span: 21 }} onValuesChange={handleFormChange}>
             
-            <div className="mb-10 p-6 bg-blue-50/50 border border-blue-100 rounded-xl relative overflow-hidden">
+            <div className="mb-10 p-6 bg-gradient-to-br from-red-50 via-orange-50/60 to-yellow-50/40 border border-red-200/60 rounded-2xl relative overflow-hidden shadow-sm">
+              <div className="absolute top-0 right-0 w-28 h-28 bg-gradient-to-bl from-red-100/40 to-transparent rounded-bl-full pointer-events-none" />
               <div className="flex justify-between items-center mb-5">
-                <h3 className="text-base font-bold text-blue-800 m-0">1. 战前准备：选品与意图注入</h3>
+                <h3 className="text-base font-bold text-red-800 m-0 flex items-center gap-2">
+                  <span className="w-7 h-7 bg-gradient-to-br from-red-500 to-orange-500 rounded-lg flex items-center justify-center shadow-sm text-white text-xs font-black">1</span>
+                  战前准备：选品与意图注入
+                </h3>
               </div>
               
               <div className="flex gap-8 mb-5">
@@ -1536,6 +1700,148 @@ const TEXT_MODELS = [
                </Form.Item>
             </div>
 
+            {/* 🎙️ 口播文案 & TTS 语音合成 */}
+            <div className="mb-8 p-5 border border-teal-200 rounded-lg bg-gradient-to-r from-teal-50 to-cyan-50">
+              <div className="flex justify-between items-center mb-4">
+                <span className="font-bold text-teal-800 flex items-center">
+                  <CustomerServiceOutlined className="mr-2 text-lg text-teal-600" />
+                  第二步：口播文案 &amp; 语音合成
+                  <span className="ml-2 text-[10px] bg-teal-100 text-teal-600 px-2 py-0.5 rounded-full">OmniVoice TTS</span>
+                </span>
+                <Button
+                  size="small"
+                  type="primary"
+                  icon={<SoundOutlined />}
+                  onClick={handleExtractScript}
+                  loading={extractingScript}
+                  className="bg-teal-600 border-teal-600 hover:bg-teal-700 font-bold"
+                >
+                  提取口播文案
+                </Button>
+              </div>
+
+              <Input.TextArea
+                value={broadcastScript}
+                onChange={e => setBroadcastScript(e.target.value)}
+                rows={5}
+                className="text-sm bg-white mb-4 rounded-lg border-teal-200"
+                placeholder="点击「提取口播文案」从策划案中自动生成，也可直接在此输入或粘贴文案..."
+              />
+
+              <div className="flex flex-wrap gap-3 items-center">
+                <span className="text-xs font-medium text-gray-600">声音：</span>
+                <Select
+                  value={ttsVoice}
+                  onChange={setTtsVoice}
+                  size="small"
+                  className="w-44"
+                  options={ttsVoices.map(v => ({ value: v.id, label: v.name }))}
+                />
+
+                <span className="text-xs font-medium text-gray-600">语速：</span>
+                <Select
+                  value={ttsSpeed}
+                  onChange={setTtsSpeed}
+                  size="small"
+                  className="w-24"
+                  options={[
+                    { value: 0.75, label: '0.75x 慢' },
+                    { value: 1.0,  label: '1.0x 正常' },
+                    { value: 1.25, label: '1.25x 快' },
+                    { value: 1.5,  label: '1.5x 更快' },
+                  ]}
+                />
+
+                <Button
+                  type="primary"
+                  icon={generatingTts ? <LoadingOutlined /> : <CustomerServiceOutlined />}
+                  onClick={handleGenerateTts}
+                  loading={generatingTts}
+                  disabled={!broadcastScript.trim()}
+                  className="bg-teal-600 border-teal-600 hover:bg-teal-700 font-bold"
+                  size="small"
+                >
+                  生成语音 &amp; 存入 R2
+                </Button>
+
+                {ttsVoiceUrl && (
+                  <>
+                    <Button
+                      size="small"
+                      icon={<DownloadOutlined />}
+                      onClick={() => window.open(ttsVoiceUrl, '_blank')}
+                      className="text-teal-700 border-teal-300"
+                    >
+                      下载语音
+                    </Button>
+                    <audio controls src={ttsVoiceUrl} className="h-8 flex-1 min-w-[200px]" />
+                  </>
+                )}
+              </div>
+
+              {/* ── CosyVoice 2 情绪合成 ── */}
+              <div className="mt-5 pt-4 border-t border-teal-100">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-xs font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full">CosyVoice 2</span>
+                  <span className="text-xs text-gray-500">阿里出品 · 原生情绪控制</span>
+                </div>
+                <div className="flex flex-wrap gap-3 items-center">
+                  <span className="text-xs font-medium text-gray-600">声音：</span>
+                  <Select value={cosyVoiceSpeaker} onChange={setCosyVoiceSpeaker} size="small" className="w-32"
+                    options={[{value:'中文女声',label:'中文女声'},{value:'中文男声',label:'中文男声'},{value:'英文女声',label:'英文女声'},{value:'英文男声',label:'英文男声'}]} />
+                  <span className="text-xs font-medium text-gray-600">情绪：</span>
+                  <Select value={cosyVoiceEmotion} onChange={setCosyVoiceEmotion} size="small" className="w-36" options={EMOTION_OPTIONS} />
+                  <Button type="primary" size="small"
+                    icon={generatingCosyVoice ? <LoadingOutlined /> : <CustomerServiceOutlined />}
+                    onClick={handleGenerateCosyVoice} loading={generatingCosyVoice}
+                    disabled={!broadcastScript.trim() || !ttsStatus.cosyvoice}
+                    title={!ttsStatus.cosyvoice ? '需在 .env 配置 MODAL_COSYVOICE_URL 并部署' : undefined}
+                    className="bg-purple-600 border-purple-600 font-bold">
+                    {ttsStatus.cosyvoice ? 'CosyVoice 合成' : 'CosyVoice（未部署）'}
+                  </Button>
+                  {cosyVoiceUrl && <Button size="small" icon={<DownloadOutlined />} onClick={() => window.open(cosyVoiceUrl,'_blank')} className="text-purple-700 border-purple-300">下载</Button>}
+                </div>
+                {cosyVoiceUrl && (
+                  <div className="mt-3 p-3 bg-white rounded-lg border border-purple-200 flex items-center gap-3">
+                    <SoundOutlined className="text-purple-500 text-lg flex-shrink-0" />
+                    <audio src={cosyVoiceUrl} controls className="flex-1" style={{height:'32px'}} />
+                    <span className="text-[10px] text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full flex-shrink-0">✅ CosyVoice · R2 voice/</span>
+                  </div>
+                )}
+              </div>
+
+              {/* ── EmotiVoice 情绪合成 ── */}
+              <div className="mt-4 pt-4 border-t border-teal-100">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-xs font-bold text-orange-700 bg-orange-100 px-2 py-0.5 rounded-full">EmotiVoice</span>
+                  <span className="text-xs text-gray-500">网易云音乐开源 · 200+ 情绪风格</span>
+                </div>
+                <div className="flex flex-wrap gap-3 items-center">
+                  <span className="text-xs font-medium text-gray-600">声音：</span>
+                  <Select value={emotiVoiceSpeaker} onChange={setEmotiVoiceSpeaker} size="small" className="w-32"
+                    options={[{value:'中文女声A',label:'中文女声A'},{value:'中文女声B',label:'中文女声B'},{value:'中文男声A',label:'中文男声A'},{value:'中文男声B',label:'中文男声B'}]} />
+                  <span className="text-xs font-medium text-gray-600">情绪：</span>
+                  <Select value={emotiVoiceEmotion} onChange={setEmotiVoiceEmotion} size="small" className="w-36" options={EMOTION_OPTIONS} />
+                  <Button type="primary" size="small"
+                    icon={generatingEmotiVoice ? <LoadingOutlined /> : <CustomerServiceOutlined />}
+                    onClick={handleGenerateEmotiVoice} loading={generatingEmotiVoice}
+                    disabled={!broadcastScript.trim() || !ttsStatus.emotivoice}
+                    title={!ttsStatus.emotivoice ? '需在 .env 配置 MODAL_EMOTIVOICE_URL 并部署' : undefined}
+                    className="bg-orange-500 border-orange-500 font-bold">
+                    {ttsStatus.emotivoice ? 'EmotiVoice 合成' : 'EmotiVoice（未部署）'}
+                  </Button>
+                  {emotiVoiceUrl && <Button size="small" icon={<DownloadOutlined />} onClick={() => window.open(emotiVoiceUrl,'_blank')} className="text-orange-700 border-orange-300">下载</Button>}
+                </div>
+                {emotiVoiceUrl && (
+                  <div className="mt-3 p-3 bg-white rounded-lg border border-orange-200 flex items-center gap-3">
+                    <SoundOutlined className="text-orange-500 text-lg flex-shrink-0" />
+                    <audio src={emotiVoiceUrl} controls className="flex-1" style={{height:'32px'}} />
+                    <span className="text-[10px] text-orange-600 bg-orange-50 px-2 py-0.5 rounded-full flex-shrink-0">✅ EmotiVoice · R2 voice/</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
             <Form.Item label={<span className="font-bold text-gray-700 block">主图</span>} className="mb-8">
               <div className="flex flex-col">
                 <div className="flex justify-between items-center flex-wrap gap-3 mb-6 bg-gray-50 p-4 border border-gray-100 rounded-lg">
@@ -1592,26 +1898,68 @@ const TEXT_MODELS = [
               </div>
             </Form.Item>
 
-            {/* RunPod LTX 服务状态栏（三个视频版块共用） */}
-            <div className="mb-4 flex items-center gap-2 px-1">
-              <span className="text-xs text-gray-500 font-medium">RunPod LTX-Video：</span>
-              {ltxServiceReady === null && (
-                <span className="text-xs text-gray-400 flex items-center gap-1"><Spin size="small" /> 检测中...</span>
+            {/* RunPod LTX 服务状态栏 + 渲染模式选项（三个视频版块共用） */}
+            <div className="mb-4 p-3 bg-gray-50 border border-gray-200 rounded-lg">
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="text-xs text-gray-500 font-medium shrink-0">RunPod 视频服务：</span>
+                {ltxServiceReady === null && (
+                  <span className="text-xs text-gray-400 flex items-center gap-1"><Spin size="small" /> 检测中...</span>
+                )}
+                {ltxServiceReady === true && (
+                  <span className="text-xs text-green-600 font-bold flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-green-500 inline-block" /> 服务就绪
+                  </span>
+                )}
+                {ltxServiceReady === false && (
+                  <span className="text-xs text-red-500 font-bold flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-red-400 inline-block" /> 未就绪
+                    <button className="ml-1 underline text-blue-500 cursor-pointer bg-transparent border-none p-0 text-xs"
+                      onClick={() => {
+                        setLtxServiceReady(null);
+                        fetch(`${API_BASE}/api/v1/video/ltx-health`).then(r=>r.json()).then(d=>setLtxServiceReady(d.ready===true)).catch(()=>setLtxServiceReady(false));
+                      }}>重检</button>
+                  </span>
+                )}
+                <span className="text-gray-300 mx-1">|</span>
+                {/* 渲染模式切换 */}
+                <span className="text-xs text-gray-500 font-medium shrink-0">渲染模式：</span>
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => setLtxFastMode(false)}
+                    className={`text-xs px-2 py-1 rounded border font-bold cursor-pointer transition-all ${!ltxFastMode ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500 border-gray-300 hover:border-indigo-400'}`}
+                  >🎬 Wan2.2 正式出片（~60s/条）</button>
+                  <button
+                    onClick={() => setLtxFastMode(true)}
+                    className={`text-xs px-2 py-1 rounded border font-bold cursor-pointer transition-all ${ltxFastMode ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-500 border-gray-300 hover:border-orange-400'}`}
+                  >⚡ LTX 快速预览（~8s/条）</button>
+                </div>
+                <span className="text-gray-300 mx-1">|</span>
+                {/* 背景样式选择 */}
+                <span className="text-xs text-gray-500 font-medium shrink-0">商品背景：</span>
+                <div className="flex gap-1">
+                  {[
+                    { value: 'gradient', label: '渐变', emoji: '🌈' },
+                    { value: 'white',    label: '纯白', emoji: '⬜' },
+                    { value: 'warm',     label: '暖色', emoji: '🟡' },
+                    { value: 'dark',     label: '深色', emoji: '⬛' },
+                  ].map(opt => (
+                    <button
+                      key={opt.value}
+                      onClick={() => setLtxBackgroundStyle(opt.value)}
+                      className={`text-xs px-2 py-1 rounded border font-bold cursor-pointer transition-all ${ltxBackgroundStyle === opt.value ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-gray-500 border-gray-300 hover:border-teal-400'}`}
+                    >{opt.emoji} {opt.label}</button>
+                  ))}
+                </div>
+              </div>
+              {ltxFastMode && (
+                <div className="mt-2 text-[11px] text-orange-600 bg-orange-50 px-2 py-1 rounded border border-orange-100">
+                  ⚡ 快速预览模式：使用 LTX-Video（~8s/条），num_frames=25，steps=20，适合快速确认构图；正式出片请切换到 Wan2.2 模式。
+                </div>
               )}
-              {ltxServiceReady === true && (
-                <span className="text-xs text-green-600 font-bold flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-green-500 inline-block" /> 服务就绪
-                </span>
-              )}
-              {ltxServiceReady === false && (
-                <span className="text-xs text-red-500 font-bold flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-red-400 inline-block" /> 服务未就绪（RunPod 未启动或模型加载中）
-                  <button className="ml-2 underline text-blue-500 cursor-pointer bg-transparent border-none p-0"
-                    onClick={() => {
-                      setLtxServiceReady(null);
-                      fetch(`${API_BASE}/api/v1/video/ltx-health`).then(r=>r.json()).then(d=>setLtxServiceReady(d.ready===true)).catch(()=>setLtxServiceReady(false));
-                    }}>重新检测</button>
-                </span>
+              {!ltxFastMode && (
+                <div className="mt-2 text-[11px] text-indigo-600 bg-indigo-50 px-2 py-1 rounded border border-indigo-100">
+                  🎬 正式出片模式：使用 Wan2.2（~60s/条），num_frames=97，steps=50，有参考图时自动启用 TI2V/I2V 模型，CLIP 自动选最匹配角度。
+                </div>
               )}
             </div>
 
@@ -1682,13 +2030,18 @@ const TEXT_MODELS = [
                         </div>
                       ))}
                     </div>
-                    {ltxClips.some(v => v !== '') && (
+                    {(generatingLtx || ltxClips.some(v => v !== '')) && (
                       <div className="border-t border-indigo-100 p-3 bg-gray-50">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-bold text-gray-700">🎬 LTX 渲染结果</span>
-                          <Button size="small" icon={<DownloadOutlined />} loading={downloading}
-                            onClick={() => { ltxClips.filter(u=>u).forEach((url,i)=>{ const a=document.createElement('a'); a.href=url; a.download=`ltx_clip_${i+1}.mp4`; a.click(); }); }}
-                            className="text-green-600 border-green-300 bg-green-50 font-bold">打包下载</Button>
+                          <span className="text-xs font-bold text-gray-700">
+                            🎬 LTX 渲染结果
+                            {generatingLtx && <span className="ml-2 text-indigo-500 font-normal animate-pulse text-[11px]">{ltxProgress}</span>}
+                          </span>
+                          {ltxClips.some(v => v !== '') && (
+                            <Button size="small" icon={<DownloadOutlined />} loading={downloading}
+                              onClick={() => { ltxClips.filter(u=>u).forEach((url,i)=>{ const a=document.createElement('a'); a.href=url; a.download=`ltx_clip_${i+1}.mp4`; a.click(); }); }}
+                              className="text-green-600 border-green-300 bg-green-50 font-bold">打包下载</Button>
+                          )}
                         </div>
                         <div className="grid grid-cols-4 lg:grid-cols-6 gap-2">
                           {ltxClips.map((vidUrl, i) => (
@@ -1700,8 +2053,12 @@ const TEXT_MODELS = [
                                   <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => window.open(vidUrl)} />
                                 </div></>
                               ) : (
-                                <div className="flex flex-col items-center opacity-40 text-white">
-                                  <VideoCameraOutlined className="text-sm" /><span className="text-[8px]">LTX</span>
+                                <div className="flex flex-col items-center text-white">
+                                  {generatingLtx ? (
+                                    <><Spin size="small" /><span className="text-[8px] mt-1 opacity-60">渲染中</span></>
+                                  ) : (
+                                    <><VideoCameraOutlined className="text-sm opacity-40" /><span className="text-[8px] opacity-40">LTX</span></>
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -1794,13 +2151,18 @@ const TEXT_MODELS = [
                         </div>
                       ))}
                     </div>
-                    {explainLtxClips.some(v => v !== '') && (
+                    {(generatingExplainLtx || explainLtxClips.some(v => v !== '')) && (
                       <div className="border-t border-orange-100 p-3 bg-gray-50">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-bold text-gray-700">🎬 LTX 渲染结果（9:16）</span>
-                          <Button size="small" icon={<DownloadOutlined />} loading={downloading}
-                            onClick={() => { explainLtxClips.filter(u=>u).forEach((url,i)=>{ const a=document.createElement('a'); a.href=url; a.download=`explain_ltx_${i+1}.mp4`; a.click(); }); }}
-                            className="text-green-600 border-green-300 bg-green-50 font-bold">打包下载</Button>
+                          <span className="text-xs font-bold text-gray-700">
+                            🎬 LTX 渲染结果（9:16）
+                            {generatingExplainLtx && <span className="ml-2 text-orange-500 font-normal animate-pulse text-[11px]">{explainLtxProgress}</span>}
+                          </span>
+                          {explainLtxClips.some(v => v !== '') && (
+                            <Button size="small" icon={<DownloadOutlined />} loading={downloading}
+                              onClick={() => { explainLtxClips.filter(u=>u).forEach((url,i)=>{ const a=document.createElement('a'); a.href=url; a.download=`explain_ltx_${i+1}.mp4`; a.click(); }); }}
+                              className="text-green-600 border-green-300 bg-green-50 font-bold">打包下载</Button>
+                          )}
                         </div>
                         <div className="grid grid-cols-4 lg:grid-cols-6 gap-2">
                           {explainLtxClips.map((vidUrl, i) => (
@@ -1812,7 +2174,13 @@ const TEXT_MODELS = [
                                   <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => window.open(vidUrl)} />
                                 </div></>
                               ) : (
-                                <div className="flex flex-col items-center opacity-40 text-white"><VideoCameraOutlined className="text-sm" /><span className="text-[8px]">LTX</span></div>
+                                <div className="flex flex-col items-center text-white">
+                                  {generatingExplainLtx ? (
+                                    <><Spin size="small" /><span className="text-[8px] mt-1 opacity-60">渲染中</span></>
+                                  ) : (
+                                    <><VideoCameraOutlined className="text-sm opacity-40" /><span className="text-[8px] opacity-40">LTX</span></>
+                                  )}
+                                </div>
                               )}
                             </div>
                           ))}
@@ -1902,13 +2270,18 @@ const TEXT_MODELS = [
                         </div>
                       ))}
                     </div>
-                    {detailLtxClips.some(v => v !== '') && (
+                    {(generatingDetailLtx || detailLtxClips.some(v => v !== '')) && (
                       <div className="border-t border-teal-100 p-3 bg-gray-50">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-bold text-gray-700">🎬 LTX 渲染结果（16:9）</span>
-                          <Button size="small" icon={<DownloadOutlined />} loading={downloading}
-                            onClick={() => { detailLtxClips.filter(u=>u).forEach((url,i)=>{ const a=document.createElement('a'); a.href=url; a.download=`detail_ltx_${i+1}.mp4`; a.click(); }); }}
-                            className="text-green-600 border-green-300 bg-green-50 font-bold">打包下载</Button>
+                          <span className="text-xs font-bold text-gray-700">
+                            🎬 LTX 渲染结果（16:9）
+                            {generatingDetailLtx && <span className="ml-2 text-teal-500 font-normal animate-pulse text-[11px]">{detailLtxProgress}</span>}
+                          </span>
+                          {detailLtxClips.some(v => v !== '') && (
+                            <Button size="small" icon={<DownloadOutlined />} loading={downloading}
+                              onClick={() => { detailLtxClips.filter(u=>u).forEach((url,i)=>{ const a=document.createElement('a'); a.href=url; a.download=`detail_ltx_${i+1}.mp4`; a.click(); }); }}
+                              className="text-green-600 border-green-300 bg-green-50 font-bold">打包下载</Button>
+                          )}
                         </div>
                         <div className="grid grid-cols-4 lg:grid-cols-6 gap-2">
                           {detailLtxClips.map((vidUrl, i) => (
@@ -1920,7 +2293,13 @@ const TEXT_MODELS = [
                                   <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => window.open(vidUrl)} />
                                 </div></>
                               ) : (
-                                <div className="flex flex-col items-center opacity-40 text-white"><VideoCameraOutlined className="text-sm" /><span className="text-[8px]">LTX</span></div>
+                                <div className="flex flex-col items-center text-white">
+                                  {generatingDetailLtx ? (
+                                    <><Spin size="small" /><span className="text-[8px] mt-1 opacity-60">渲染中</span></>
+                                  ) : (
+                                    <><VideoCameraOutlined className="text-sm opacity-40" /><span className="text-[8px] opacity-40">LTX</span></>
+                                  )}
+                                </div>
                               )}
                             </div>
                           ))}

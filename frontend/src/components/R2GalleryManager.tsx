@@ -1,4 +1,5 @@
 // frontend/src/components/R2GalleryManager.tsx
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8000';
 import React, { useState, useEffect } from 'react';
 import { Modal, Button, message, Upload, Card, Input, Spin, Dropdown, Menu, Popconfirm, Tag } from 'antd';
 import { 
@@ -30,7 +31,7 @@ export default function R2GalleryManager() {
   const fetchImages = async (pageNum: number, append: boolean = false) => {
     setFetching(true);
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/v1/r2/images?page=${pageNum}&limit=20`);
+      const response = await fetch(`${API_BASE}/api/v1/r2/images?page=${pageNum}&limit=20`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       if (data.code === 200) {
@@ -60,7 +61,7 @@ export default function R2GalleryManager() {
     const formData = new FormData();
     formData.append('file', file);
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/v1/r2/upload', { method: 'POST', body: formData });
+      const res = await fetch(`${API_BASE}/api/v1/r2/upload`, { method: 'POST', body: formData });
       const data = await res.json();
       if (data.code === 200) {
         onSuccess(data, file);
@@ -84,7 +85,7 @@ export default function R2GalleryManager() {
 
   const handleDelete = async (fileKey: string) => {
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/v1/r2/delete', {
+      const res = await fetch(`${API_BASE}/api/v1/r2/delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_key: fileKey })
@@ -105,7 +106,7 @@ export default function R2GalleryManager() {
   const handleBatchDelete = async () => {
     if (selectedKeys.length === 0) return;
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/v1/r2/batch-delete', {
+      const res = await fetch(`${API_BASE}/api/v1/r2/batch-delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_keys: selectedKeys })
@@ -133,7 +134,7 @@ export default function R2GalleryManager() {
   const handleRename = async (fileKey: string) => {
     if (!newName.trim()) return message.warning('名称不能为空');
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/v1/r2/rename', {
+      const res = await fetch(`${API_BASE}/api/v1/r2/rename`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_key: fileKey, new_name: newName.trim() })

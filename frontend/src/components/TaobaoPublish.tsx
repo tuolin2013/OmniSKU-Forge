@@ -1,10 +1,12 @@
 // frontend/src/components/TaobaoPublish.tsx
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8000';
 import React, { useState, useEffect, useRef } from 'react';
 import { Form, Input, Button, Select, message, Divider, Modal, Spin, Upload, Image, Tabs, Switch, Tag, Cascader } from 'antd';
 import { 
   RobotOutlined, PictureOutlined, ThunderboltOutlined, 
   VideoCameraOutlined, CloudOutlined, UploadOutlined, RocketOutlined, EditOutlined, DownloadOutlined,
-  CheckCircleFilled, PlusOutlined, CloseCircleOutlined, LoadingOutlined
+  CheckCircleFilled, PlusOutlined, CloseCircleOutlined, LoadingOutlined,
+  SoundOutlined, CustomerServiceOutlined
 } from '@ant-design/icons';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
@@ -61,6 +63,24 @@ export default function TaobaoPublish() {
   const [videoRenderProgress, setVideoRenderProgress] = useState("");
   const [videoClips, setVideoClips] = useState<string[]>(Array(12).fill(''));
 
+  // LTX RunPod 视频（script-first 模式，与 PDD 一致）
+  const [ltxServiceReady, setLtxServiceReady] = useState<boolean | null>(null);
+  useEffect(() => {
+    fetch(`${API_BASE}/api/v1/video/ltx-health`)
+      .then(r => r.json())
+      .then(d => setLtxServiceReady(d.ready === true))
+      .catch(() => setLtxServiceReady(false));
+  }, []);
+  const [ltxFastMode, setLtxFastMode] = useState(false);
+  const [ltxBackgroundStyle, setLtxBackgroundStyle] = useState<string>('gradient');
+
+  type TaobaoScriptData = { global_style_prompt: string; ratio?: string; storyboard: { logic: string; scene_prompt: string; video_type?: string }[] };
+  const [generatingScript, setGeneratingScript] = useState(false);
+  const [videoScript, setVideoScript] = useState<TaobaoScriptData | null>(null);
+  const [generatingLtxVideo, setGeneratingLtxVideo] = useState(false);
+  const [ltxVideoProgress, setLtxVideoProgress] = useState("");
+  const [ltxVideoClips, setLtxVideoClips] = useState<string[]>(Array(12).fill(''));
+
   const [generatingBuyerShows, setGeneratingBuyerShows] = useState(false);
   const [buyerShowModel, setBuyerShowModel] = useState<string>('');
   const [buyerShowProgress, setBuyerShowProgress] = useState("");
@@ -89,7 +109,7 @@ export default function TaobaoPublish() {
 
   const [catalogTree, setCatalogTree] = useState([]);
   useEffect(() => {
-    fetch('http://127.0.0.1:8000/api/catalog/tree')
+    fetch(`${API_BASE}/api/catalog/tree`)
       .then(res => res.json())
       .then(data => {
         if (data.code === 200) {
@@ -112,6 +132,56 @@ export default function TaobaoPublish() {
 
   const [downloading, setDownloading] = useState(false);
 
+  // 🎙️ 口播文案 & TTS 状态
+  const [extractingScript, setExtractingScript] = useState(false);
+  const [broadcastScript, setBroadcastScript] = useState('');
+  const [ttsVoice, setTtsVoice] = useState('zf_xiaobei');
+  const [ttsSpeed, setTtsSpeed] = useState(1.0);
+  const [generatingTts, setGeneratingTts] = useState(false);
+  const [ttsVoiceUrl, setTtsVoiceUrl] = useState('');
+  const [ttsVoices, setTtsVoices] = useState([
+    { id: 'zf_xiaobei', name: '小北（中文女声）' },
+    { id: 'zm_yunxi',   name: '云曦（中文男声）' },
+    { id: 'af_heart',   name: 'Heart（英文女声）' },
+    { id: 'af_bella',   name: 'Bella（英文女声）' },
+    { id: 'am_adam',    name: 'Adam（英文男声）'  },
+  ]);
+  // TTS 服务部署状态
+  const [ttsStatus, setTtsStatus] = useState<{ kokoro: boolean; cosyvoice: boolean; emotivoice: boolean }>({ kokoro: false, cosyvoice: false, emotivoice: false });
+  useEffect(() => {
+    fetch(`${API_BASE}/api/v1/tts/status`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.code === 200) setTtsStatus({ kokoro: d.data.kokoro.ready, cosyvoice: d.data.cosyvoice.ready, emotivoice: d.data.emotivoice.ready });
+      })
+      .catch(() => {});
+  }, []);
+  // CosyVoice 2
+  const [generatingCosyVoice, setGeneratingCosyVoice] = useState(false);
+  const [cosyVoiceSpeaker, setCosyVoiceSpeaker] = useState('中文女声');
+  const [cosyVoiceEmotion, setCosyVoiceEmotion] = useState('neutral');
+  const [cosyVoiceUrl, setCosyVoiceUrl] = useState('');
+  // EmotiVoice
+  const [generatingEmotiVoice, setGeneratingEmotiVoice] = useState(false);
+  const [emotiVoiceSpeaker, setEmotiVoiceSpeaker] = useState('中文女声A');
+  const [emotiVoiceEmotion, setEmotiVoiceEmotion] = useState('neutral');
+  const [emotiVoiceUrl, setEmotiVoiceUrl] = useState('');
+
+  const EMOTION_OPTIONS = [
+    { value: 'neutral',   label: '😐 平静' },
+    { value: 'happy',     label: '😊 开心' },
+    { value: 'excited',   label: '🤩 激动兴奋' },
+    { value: 'sad',       label: '😢 悲伤' },
+    { value: 'angry',     label: '😠 生气' },
+    { value: 'tender',    label: '🥰 温柔' },
+    { value: 'lively',    label: '💃 活泼热情' },
+    { value: 'calm',      label: '🧘 平静沉稳' },
+    { value: 'whisper',   label: '🤫 轻声耳语' },
+    { value: 'confident', label: '💪 自信' },
+    { value: 'warm',      label: '🤗 亲切温暖' },
+    { value: 'serious',   label: '🎯 严肃专业' },
+  ];
+
   // === 🚀 全局任务状态收集 ===
   const activeTasks = [
     { name: "生成图文策划案", active: parsing, status: "执行中..." },
@@ -130,7 +200,7 @@ export default function TaobaoPublish() {
   const fetchR2Images = async (page: number, append: boolean = false) => {
     setFetchingR2(true);
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/v1/r2/images?page=${page}&limit=20`);
+      const response = await fetch(`${API_BASE}/api/v1/r2/images?page=${page}&limit=20`);
       if (!response.ok) throw new Error(`后端未响应 (HTTP ${response.status})`);
       const resData = await response.json();
       if (resData.code === 200) {
@@ -183,7 +253,7 @@ export default function TaobaoPublish() {
     const formData = new FormData();
     formData.append('file', file);
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/v1/r2/upload', { method: 'POST', body: formData });
+      const res = await fetch(`${API_BASE}/api/v1/r2/upload`, { method: 'POST', body: formData });
       if (!res.ok) throw new Error(`后端连不上 (HTTP ${res.status})`);
       const data = await res.json();
       if (data.code === 200) {
@@ -223,7 +293,7 @@ export default function TaobaoPublish() {
     const timeoutId = setTimeout(() => abortCtrl.abort(), 180_000);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/v1/agents/pm-analyze', {
+      const response = await fetch(`${API_BASE}/api/v1/agents/pm-analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: abortCtrl.signal,
@@ -271,7 +341,7 @@ export default function TaobaoPublish() {
     setTitleModel(targetModelId);
     setGeneratingTitle(true);
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/v1/agents/ops-title', {
+      const response = await fetch(`${API_BASE}/api/v1/agents/ops-title`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           platform: 'taobao', 
@@ -331,7 +401,7 @@ export default function TaobaoPublish() {
     abortControllers.current[abortKey] = new AbortController();
 
     try {
-      const briefRes = await fetch('http://127.0.0.1:8000/api/v1/agents/design-main-image-brief', {
+      const briefRes = await fetch(`${API_BASE}/api/v1/agents/design-main-image-brief`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ platform: 'taobao', pm_report: pmReport, ops_report: form.getFieldValue('base_desc') || '' })
       });
@@ -364,7 +434,7 @@ export default function TaobaoPublish() {
           attempts++;
           setProgress(`生成第 ${i + 1}/${count} 张...${attempts > 1 ? ` (重试 ${attempts}/3)` : ''}`);
           try {
-            const drawRes = await fetch('http://127.0.0.1:8000/api/v1/agents/generate-image', {
+            const drawRes = await fetch(`${API_BASE}/api/v1/agents/generate-image`, {
               method: 'POST', 
               headers: { 'Content-Type': 'application/json' },
               signal: abortControllers.current[abortKey]?.signal,
@@ -418,7 +488,7 @@ export default function TaobaoPublish() {
     abortControllers.current['detail'] = new AbortController();
 
     try {
-      const briefRes = await fetch('http://127.0.0.1:8000/api/v1/agents/design-detail-image-brief', {
+      const briefRes = await fetch(`${API_BASE}/api/v1/agents/design-detail-image-brief`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ platform: 'taobao', pm_report: pmReport, ops_report: form.getFieldValue('base_desc') || '' })
       });
@@ -445,7 +515,7 @@ export default function TaobaoPublish() {
           attempts++;
           setDetailRenderProgress(`生成第 ${i + 1}/${numSlices} 屏...${attempts > 1 ? ` (重试 ${attempts}/3)` : ''}`);
           try {
-            const drawRes = await fetch('http://127.0.0.1:8000/api/v1/agents/generate-image', {
+            const drawRes = await fetch(`${API_BASE}/api/v1/agents/generate-image`, {
               method: 'POST', 
               headers: { 'Content-Type': 'application/json' },
               signal: abortControllers.current['detail']?.signal,
@@ -499,7 +569,7 @@ export default function TaobaoPublish() {
     abortControllers.current['sku'] = new AbortController();
 
     try {
-      const briefRes = await fetch('http://127.0.0.1:8000/api/v1/agents/design-sku-image-brief', {
+      const briefRes = await fetch(`${API_BASE}/api/v1/agents/design-sku-image-brief`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ platform: 'taobao', pm_report: pmReport, ops_report: form.getFieldValue('base_desc') || '' })
       });
@@ -533,7 +603,7 @@ export default function TaobaoPublish() {
           attempts++;
           setSkuRenderProgress(`生成第 ${i + 1}/${numImages} 张...${attempts > 1 ? ` (重试 ${attempts}/3)` : ''}`);
           try {
-            const drawRes = await fetch('http://127.0.0.1:8000/api/v1/agents/generate-image', {
+            const drawRes = await fetch(`${API_BASE}/api/v1/agents/generate-image`, {
               method: 'POST', 
               headers: { 'Content-Type': 'application/json' },
               signal: abortControllers.current['sku']?.signal,
@@ -588,7 +658,7 @@ export default function TaobaoPublish() {
 
     try {
       // 1. 获取剧本
-      const scriptRes = await fetch(`http://127.0.0.1:8000/api/v1/video/design-script`, {
+      const scriptRes = await fetch(`${API_BASE}/api/v1/video/design-script`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pm_report: pmReport, ops_report: opsReport, platform: 'taobao' })
@@ -613,7 +683,7 @@ export default function TaobaoPublish() {
         setVideoRenderProgress(`生成视频切片 ${i + 1}/${numClips}...`);
         
         try {
-          const videoRes = await fetch(`http://127.0.0.1:8000/api/v1/video/generate`, {
+          const videoRes = await fetch(`${API_BASE}/api/v1/video/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             signal: abortControllers.current['video']?.signal,
@@ -662,7 +732,7 @@ export default function TaobaoPublish() {
       const folder = zip.folder('taobao_video_clips');
       for (let i = 0; i < validClips.length; i++) {
         const url = validClips[i];
-        const response = await fetch(`http://127.0.0.1:8000/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
+        const response = await fetch(`${API_BASE}/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
         const blob = await response.blob();
         folder?.file(`视频切片_${i + 1}.mp4`, blob);
       }
@@ -688,7 +758,7 @@ export default function TaobaoPublish() {
     abortControllers.current['buyerShow'] = new AbortController();
 
     try {
-      const briefRes = await fetch('http://127.0.0.1:8000/api/v1/agents/design-buyer-show', {
+      const briefRes = await fetch(`${API_BASE}/api/v1/agents/design-buyer-show`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           platform: 'taobao', 
@@ -734,7 +804,7 @@ export default function TaobaoPublish() {
           attempts++;
           setBuyerShowProgress(`生成第 ${i + 1}/${numImages} 张...${attempts > 1 ? ` (重试 ${attempts}/3)` : ''}`);
           try {
-            const drawRes = await fetch('http://127.0.0.1:8000/api/v1/agents/generate-image', {
+            const drawRes = await fetch(`${API_BASE}/api/v1/agents/generate-image`, {
               method: 'POST', 
               headers: { 'Content-Type': 'application/json' },
               signal: abortControllers.current['buyerShow']?.signal,
@@ -790,7 +860,7 @@ export default function TaobaoPublish() {
       for (let i = 0; i < buyerShowImages.length; i++) {
         const url = buyerShowImages[i];
         if (url) {
-          const response = await fetch(`http://127.0.0.1:8000/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
+          const response = await fetch(`${API_BASE}/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
           const blob = await response.blob();
           folder?.file(`买家秀_${i + 1}.jpg`, blob);
         }
@@ -810,6 +880,200 @@ export default function TaobaoPublish() {
     }
   };
 
+  // 🎬 LTX RunPod 批量视频生成（generate-from-script）
+  const handleGenerateLtxVideo = async () => {
+    const pmReport = form.getFieldValue('pm_report');
+    const opsReport = form.getFieldValue('base_desc') || '';
+    if (!pmReport) return message.warning('请先生成策划案');
+
+    setGeneratingLtxVideo(true);
+    setLtxVideoProgress('构思视频剧本中...');
+    setLtxVideoClips(Array(12).fill(''));
+
+    try {
+      // 1. 生成剧本 JSON
+      const scriptRes = await fetch(`${API_BASE}/api/v1/video/design-script`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pm_report: pmReport, ops_report: opsReport, platform: 'taobao' }),
+      });
+      if (!scriptRes.ok) throw new Error('剧本生成失败');
+      const scriptData = await scriptRes.json();
+
+      let cleanJsonStr = scriptData.data as string;
+      if (cleanJsonStr.includes('```json')) cleanJsonStr = cleanJsonStr.split('```json')[1].split('```')[0].trim();
+      else if (cleanJsonStr.includes('```')) cleanJsonStr = cleanJsonStr.split('```')[1].split('```')[0].trim();
+      const parsedData = JSON.parse(cleanJsonStr);
+
+      const storyboard = (parsedData.storyboard || []).map((s: any) => ({
+        logic: s.logic || '',
+        scene_prompt: s.scene_prompt || '',
+        video_type: selectedR2Images.length > 0 ? 'image-to-video' : 'text-to-video',
+      }));
+
+      setLtxVideoClips(Array(storyboard.length).fill(''));
+      setLtxVideoProgress(`提交 ${storyboard.length} 个分镜到 RunPod...`);
+
+      // 2. 一次性批量提交到 RunPod LTX
+      const genRes = await fetch(`${API_BASE}/api/v1/video/generate-from-script`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          global_style_prompt: parsedData.global_style_prompt || '',
+          ratio: '16:9',
+          storyboard,
+          image_urls: selectedR2Images,
+          num_frames: 97,
+          steps: 30,
+          fast: false,
+          background_style: 'gradient',
+        }),
+      });
+
+      if (!genRes.ok) throw new Error(`RunPod 返回 HTTP ${genRes.status}`);
+      const genData = await genRes.json();
+
+      if (genData.code === 200 && genData.results) {
+        const urls = genData.results.map((r: any) => r.video_url || '');
+        setLtxVideoClips(urls);
+        const successCount = genData.success_count ?? urls.filter(Boolean).length;
+        message.success(`RunPod 视频渲染完成！成功 ${successCount}/${genData.total} 条`);
+      } else {
+        throw new Error(genData.detail || '批量生成失败');
+      }
+    } catch (err: any) {
+      message.error(`LTX 视频生成中断: ${err.message}`);
+    } finally {
+      setGeneratingLtxVideo(false);
+      setLtxVideoProgress('');
+    }
+  };
+
+  // 🎙️ 提取口播文案
+  const handleExtractScript = async () => {
+    const pmReport = form.getFieldValue('pm_report');
+    if (!pmReport) return message.warning('请先生成策划案！');
+    setExtractingScript(true);
+    setBroadcastScript('');
+    setTtsVoiceUrl('');
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/tts/extract-script`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pm_report: pmReport,
+          sku_name: form.getFieldValue('target_sku') || '',
+          platform: 'taobao',
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.code === 200) {
+        setBroadcastScript(data.data);
+        message.success('口播文案提取成功，可在下方编辑后生成语音！');
+      } else {
+        throw new Error(data.detail || '提取失败');
+      }
+    } catch (err: any) {
+      message.error(`提取口播文案失败: ${err.message}`);
+    } finally {
+      setExtractingScript(false);
+    }
+  };
+
+  // 🎭 CosyVoice 2 合成
+  const handleGenerateCosyVoice = async () => {
+    if (!broadcastScript.trim()) return message.warning('请先提取或输入口播文案！');
+    setGeneratingCosyVoice(true);
+    setCosyVoiceUrl('');
+    message.loading({ content: '🎭 CosyVoice 2 合成中（约30~90秒）...', key: 'cosy_gen', duration: 0 });
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/tts/generate-cosyvoice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: broadcastScript,
+          speaker: cosyVoiceSpeaker,
+          emotion: cosyVoiceEmotion,
+          speed: ttsSpeed,
+          product_name: form.getFieldValue('target_sku') || 'product',
+        }),
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `HTTP ${res.status}`); }
+      const data = await res.json();
+      if (data.code === 200 && data.data?.url) {
+        setCosyVoiceUrl(data.data.url);
+        message.success({ content: '🎉 CosyVoice 合成完成！已存入 R2 voice/', key: 'cosy_gen' });
+      } else { throw new Error(data.detail || '合成失败'); }
+    } catch (err: any) {
+      message.error({ content: `CosyVoice 失败: ${err.message}`, key: 'cosy_gen' });
+    } finally { setGeneratingCosyVoice(false); }
+  };
+
+  // 🎭 EmotiVoice 合成
+  const handleGenerateEmotiVoice = async () => {
+    if (!broadcastScript.trim()) return message.warning('请先提取或输入口播文案！');
+    setGeneratingEmotiVoice(true);
+    setEmotiVoiceUrl('');
+    message.loading({ content: '🎭 EmotiVoice 合成中（约30~90秒）...', key: 'emoti_gen', duration: 0 });
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/tts/generate-emotivoice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: broadcastScript,
+          speaker: emotiVoiceSpeaker,
+          emotion: emotiVoiceEmotion,
+          speed: ttsSpeed,
+          product_name: form.getFieldValue('target_sku') || 'product',
+        }),
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `HTTP ${res.status}`); }
+      const data = await res.json();
+      if (data.code === 200 && data.data?.url) {
+        setEmotiVoiceUrl(data.data.url);
+        message.success({ content: '🎉 EmotiVoice 合成完成！已存入 R2 voice/', key: 'emoti_gen' });
+      } else { throw new Error(data.detail || '合成失败'); }
+    } catch (err: any) {
+      message.error({ content: `EmotiVoice 失败: ${err.message}`, key: 'emoti_gen' });
+    } finally { setGeneratingEmotiVoice(false); }
+  };
+
+  // 🔊 调用 TTS 生成语音并存入 R2
+  const handleGenerateTts = async () => {
+    if (!broadcastScript.trim()) return message.warning('请先提取或输入口播文案！');
+    setGeneratingTts(true);
+    setTtsVoiceUrl('');
+    message.loading({ content: '🎙️ 正在合成语音，请稍候（约20~60秒）...', key: 'tts_gen', duration: 0 });
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/tts/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: broadcastScript,
+          voice: ttsVoice,
+          speed: ttsSpeed,
+          product_name: form.getFieldValue('target_sku') || 'product',
+        }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (data.code === 200 && data.data?.url) {
+        setTtsVoiceUrl(data.data.url);
+        message.success({ content: '🎉 语音合成完成！已存入 R2 voice/ 文件夹', key: 'tts_gen' });
+      } else {
+        throw new Error(data.detail || '合成失败');
+      }
+    } catch (err: any) {
+      message.error({ content: `语音合成失败: ${err.message}`, key: 'tts_gen' });
+    } finally {
+      setGeneratingTts(false);
+    }
+  };
+
   const handleDownloadZip = async (images: string[], name: string) => {
     const validImages = images.filter(url => url);
     if (validImages.length === 0) return message.warning('没有可下载的图片！');
@@ -819,7 +1083,7 @@ export default function TaobaoPublish() {
       const folder = zip.folder(name);
       for (let i = 0; i < validImages.length; i++) {
         const url = validImages[i];
-        const response = await fetch(`http://127.0.0.1:8000/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
+        const response = await fetch(`${API_BASE}/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
         const blob = await response.blob();
         folder?.file(`${name}_${i + 1}.jpg`, blob);
       }
@@ -833,9 +1097,9 @@ export default function TaobaoPublish() {
   };
 
   return (
-    <div className="h-full bg-[#f3f4f6] flex overflow-hidden text-[13px] text-gray-700 relative">
-      <div className="flex-1 flex flex-col min-w-0 bg-white m-5 rounded-xl shadow-sm border border-gray-200 relative overflow-hidden">
-        <div className="flex justify-between items-center px-8 border-b border-gray-100 bg-gray-50/50">
+    <div className="h-full bg-gradient-to-br from-slate-50 to-orange-50/30 flex overflow-hidden text-[13px] text-gray-700 relative">
+      <div className="flex-1 flex flex-col min-w-0 bg-white m-4 rounded-2xl shadow-md border border-orange-100/60 relative overflow-hidden">
+        <div className="flex justify-between items-center px-8 border-b border-orange-100/40 bg-gradient-to-r from-white via-orange-50/20 to-white">
           <Tabs 
             activeKey={activeTab} 
             onChange={setActiveTab}
@@ -857,9 +1121,14 @@ export default function TaobaoPublish() {
         <div className="flex-1 overflow-y-auto p-8 pb-32">
           <Form form={form} layout="horizontal" labelCol={{ span: 3 }} wrapperCol={{ span: 21 }} onValuesChange={handleFormChange}>
             <div className="max-w-6xl mx-auto">
-              <div className="mb-10 p-6 bg-gradient-to-r from-blue-50 via-indigo-50 to-purple-50 border border-blue-100 rounded-xl shadow-inner relative">
-                <h3 className="text-base font-bold text-blue-800 mb-5 flex items-center">
-                  <RobotOutlined className="mr-2 text-xl" /> AI 原料加工厂 <span className="ml-2 text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full">淘宝专属模型</span>
+              <div className="mb-10 p-6 bg-gradient-to-br from-orange-50 via-amber-50/60 to-yellow-50 border border-orange-200/60 rounded-2xl shadow-sm relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-orange-100/40 to-transparent rounded-bl-full pointer-events-none" />
+                <h3 className="text-base font-bold text-orange-800 mb-5 flex items-center gap-2">
+                  <span className="w-8 h-8 bg-gradient-to-br from-orange-500 to-red-500 rounded-lg flex items-center justify-center shadow-sm">
+                    <RobotOutlined className="text-white text-base" />
+                  </span>
+                  AI 素材加工厂
+                  <span className="text-[10px] bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full font-normal">淘宝专属</span>
                 </h3>
                 <div className="flex gap-8">
                   <div className="w-[300px]">
@@ -918,6 +1187,204 @@ export default function TaobaoPublish() {
                 </div>
               </div>
 
+              {/* 🎙️ 口播文案 & TTS 语音合成 */}
+              <div className="mb-8 p-5 border border-teal-200 rounded-lg bg-gradient-to-r from-teal-50 to-cyan-50">
+                <div className="flex justify-between items-center mb-4">
+                  <span className="font-bold text-teal-800 flex items-center">
+                    <CustomerServiceOutlined className="mr-2 text-lg text-teal-600" />
+                    第二步：口播文案 &amp; 语音合成
+                    <span className="ml-2 text-[10px] bg-teal-100 text-teal-600 px-2 py-0.5 rounded-full">OmniVoice TTS</span>
+                  </span>
+                  <Button
+                    size="small"
+                    type="primary"
+                    icon={<SoundOutlined />}
+                    onClick={handleExtractScript}
+                    loading={extractingScript}
+                    className="bg-teal-600 border-teal-600 hover:bg-teal-700 font-bold"
+                  >
+                    提取口播文案
+                  </Button>
+                </div>
+
+                {/* 可编辑文案区 */}
+                <Input.TextArea
+                  value={broadcastScript}
+                  onChange={e => setBroadcastScript(e.target.value)}
+                  rows={5}
+                  className="text-sm bg-white mb-4 rounded-lg border-teal-200"
+                  placeholder="点击「提取口播文案」从策划案中自动生成，也可直接在此输入或粘贴文案..."
+                />
+
+                {/* TTS 控制栏 */}
+                <div className="flex flex-wrap gap-3 items-center">
+                  <span className="text-xs font-medium text-gray-600">声音：</span>
+                  <Select
+                    value={ttsVoice}
+                    onChange={setTtsVoice}
+                    size="small"
+                    className="w-44"
+                    options={ttsVoices.map(v => ({ value: v.id, label: v.name }))}
+                  />
+
+                  <span className="text-xs font-medium text-gray-600">语速：</span>
+                  <Select
+                    value={ttsSpeed}
+                    onChange={setTtsSpeed}
+                    size="small"
+                    className="w-24"
+                    options={[
+                      { value: 0.75, label: '0.75x 慢' },
+                      { value: 1.0,  label: '1.0x 正常' },
+                      { value: 1.25, label: '1.25x 快' },
+                      { value: 1.5,  label: '1.5x 更快' },
+                    ]}
+                  />
+
+                  <Button
+                    type="primary"
+                    icon={generatingTts ? <LoadingOutlined /> : <CustomerServiceOutlined />}
+                    onClick={handleGenerateTts}
+                    loading={generatingTts}
+                    disabled={!broadcastScript.trim()}
+                    className="bg-teal-600 border-teal-600 hover:bg-teal-700 font-bold"
+                    size="small"
+                  >
+                    生成语音 &amp; 存入 R2
+                  </Button>
+
+                  {ttsVoiceUrl && (
+                    <Button
+                      size="small"
+                      icon={<DownloadOutlined />}
+                      onClick={() => window.open(ttsVoiceUrl, '_blank')}
+                      className="text-teal-700 border-teal-300"
+                    >
+                      下载语音
+                    </Button>
+                  )}
+                </div>
+
+                {/* 音频播放器（生成完成后显示） */}
+                {ttsVoiceUrl && (
+                  <div className="mt-4 p-3 bg-white rounded-lg border border-teal-200 flex items-center gap-3">
+                    <SoundOutlined className="text-teal-500 text-lg flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <audio src={ttsVoiceUrl} controls className="w-full" style={{ height: '32px' }} />
+                    </div>
+                    <span className="text-[10px] text-teal-600 bg-teal-50 px-2 py-0.5 rounded-full flex-shrink-0 whitespace-nowrap">✅ 已存入 R2 voice/</span>
+                  </div>
+                )}
+
+                {/* ── CosyVoice 2 情绪合成 ── */}
+                <div className="mt-5 pt-4 border-t border-teal-100">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-xs font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full">CosyVoice 2</span>
+                    <span className="text-xs text-gray-500">阿里出品 · 原生情绪控制</span>
+                  </div>
+                  <div className="flex flex-wrap gap-3 items-center">
+                    <span className="text-xs font-medium text-gray-600">声音：</span>
+                    <Select
+                      value={cosyVoiceSpeaker}
+                      onChange={setCosyVoiceSpeaker}
+                      size="small"
+                      className="w-32"
+                      options={[
+                        { value: '中文女声', label: '中文女声' },
+                        { value: '中文男声', label: '中文男声' },
+                        { value: '英文女声', label: '英文女声' },
+                        { value: '英文男声', label: '英文男声' },
+                      ]}
+                    />
+                    <span className="text-xs font-medium text-gray-600">情绪：</span>
+                    <Select
+                      value={cosyVoiceEmotion}
+                      onChange={setCosyVoiceEmotion}
+                      size="small"
+                      className="w-36"
+                      options={EMOTION_OPTIONS}
+                    />
+                    <Button
+                      type="primary"
+                      size="small"
+                      icon={generatingCosyVoice ? <LoadingOutlined /> : <CustomerServiceOutlined />}
+                      onClick={handleGenerateCosyVoice}
+                      loading={generatingCosyVoice}
+                      disabled={!broadcastScript.trim()}
+                      className="bg-purple-600 border-purple-600 font-bold"
+                    >
+                      CosyVoice 合成
+                    </Button>
+                    {cosyVoiceUrl && (
+                      <Button size="small" icon={<DownloadOutlined />} onClick={() => window.open(cosyVoiceUrl, '_blank')} className="text-purple-700 border-purple-300">下载</Button>
+                    )}
+                  </div>
+                  {cosyVoiceUrl && (
+                    <div className="mt-3 p-3 bg-white rounded-lg border border-purple-200 flex items-center gap-3">
+                      <SoundOutlined className="text-purple-500 text-lg flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <audio src={cosyVoiceUrl} controls className="w-full" style={{ height: '32px' }} />
+                      </div>
+                      <span className="text-[10px] text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full flex-shrink-0 whitespace-nowrap">✅ CosyVoice · R2 voice/</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* ── EmotiVoice 情绪合成 ── */}
+                <div className="mt-4 pt-4 border-t border-teal-100">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-xs font-bold text-orange-700 bg-orange-100 px-2 py-0.5 rounded-full">EmotiVoice</span>
+                    <span className="text-xs text-gray-500">网易云音乐开源 · 200+ 情绪风格</span>
+                  </div>
+                  <div className="flex flex-wrap gap-3 items-center">
+                    <span className="text-xs font-medium text-gray-600">声音：</span>
+                    <Select
+                      value={emotiVoiceSpeaker}
+                      onChange={setEmotiVoiceSpeaker}
+                      size="small"
+                      className="w-32"
+                      options={[
+                        { value: '中文女声A', label: '中文女声A' },
+                        { value: '中文女声B', label: '中文女声B' },
+                        { value: '中文男声A', label: '中文男声A' },
+                        { value: '中文男声B', label: '中文男声B' },
+                      ]}
+                    />
+                    <span className="text-xs font-medium text-gray-600">情绪：</span>
+                    <Select
+                      value={emotiVoiceEmotion}
+                      onChange={setEmotiVoiceEmotion}
+                      size="small"
+                      className="w-36"
+                      options={EMOTION_OPTIONS}
+                    />
+                    <Button
+                      type="primary"
+                      size="small"
+                      icon={generatingEmotiVoice ? <LoadingOutlined /> : <CustomerServiceOutlined />}
+                      onClick={handleGenerateEmotiVoice}
+                      loading={generatingEmotiVoice}
+                      disabled={!broadcastScript.trim()}
+                      className="bg-orange-500 border-orange-500 font-bold"
+                    >
+                      EmotiVoice 合成
+                    </Button>
+                    {emotiVoiceUrl && (
+                      <Button size="small" icon={<DownloadOutlined />} onClick={() => window.open(emotiVoiceUrl, '_blank')} className="text-orange-700 border-orange-300">下载</Button>
+                    )}
+                  </div>
+                  {emotiVoiceUrl && (
+                    <div className="mt-3 p-3 bg-white rounded-lg border border-orange-200 flex items-center gap-3">
+                      <SoundOutlined className="text-orange-500 text-lg flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <audio src={emotiVoiceUrl} controls className="w-full" style={{ height: '32px' }} />
+                      </div>
+                      <span className="text-[10px] text-orange-600 bg-orange-50 px-2 py-0.5 rounded-full flex-shrink-0 whitespace-nowrap">✅ EmotiVoice · R2 voice/</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               <h2 className="text-xl font-black text-gray-800 mb-6 flex items-center"><span className="w-1.5 h-5 bg-blue-500 rounded-sm mr-2"></span>图文描述</h2>
 
               <Form.Item label={<span className="font-bold text-gray-700">1:1 主图 <span className="text-red-500">*</span></span>} className="mb-10">
@@ -961,61 +1428,253 @@ export default function TaobaoPublish() {
               </Form.Item>
 
               <Form.Item label={<span className="font-bold text-gray-700 block">商品视频矩阵</span>} className="mb-12">
-                <div className="flex flex-col">
-                  <div className="flex justify-between items-center flex-wrap gap-3 mb-6 bg-gray-50 p-4 border border-gray-100 rounded-lg">
-                    <div className="flex flex-wrap gap-3 items-center">
-                      <Button 
-                        type="primary" 
-                        icon={<VideoCameraOutlined />} 
-                        onClick={handleGenerateVideo} 
-                        loading={generatingVideo}
-                        className="bg-purple-600 font-bold"
-                      >
-                        生成 60s 视频分镜切片
-                      </Button>
-                      
-                      {generatingVideo && (
-                        <span className="ml-4 text-purple-600 font-bold text-xs self-center flex items-center">
-                          <Spin size="small" className="mr-2"/>{videoRenderProgress}
-                          <Button type="text" danger size="small" icon={<CloseCircleOutlined />} className="ml-2 py-0" onClick={() => stopGeneration('video')} title="停止生成" />
+                <div className="flex flex-col gap-4">
+
+                  {/* RunPod 服务状态 + 渲染模式配置栏 */}
+                  <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <span className="text-xs text-gray-500 font-medium shrink-0">RunPod 视频服务：</span>
+                      {ltxServiceReady === null && <span className="text-xs text-gray-400 flex items-center gap-1"><Spin size="small" /> 检测中...</span>}
+                      {ltxServiceReady === true && <span className="text-xs text-green-600 font-bold flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500 inline-block" /> 服务就绪</span>}
+                      {ltxServiceReady === false && (
+                        <span className="text-xs text-red-500 font-bold flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-red-400 inline-block" /> 未就绪
+                          <button className="ml-1 underline text-blue-500 cursor-pointer bg-transparent border-none p-0 text-xs"
+                            onClick={() => { setLtxServiceReady(null); fetch(`${API_BASE}/api/v1/video/ltx-health`).then(r=>r.json()).then(d=>setLtxServiceReady(d.ready===true)).catch(()=>setLtxServiceReady(false)); }}>重检</button>
                         </span>
                       )}
+                      <span className="text-gray-300 mx-1">|</span>
+                      <span className="text-xs text-gray-500 font-medium shrink-0">渲染模式：</span>
+                      <div className="flex gap-1">
+                        <button onClick={() => setLtxFastMode(false)}
+                          className={`text-xs px-2 py-1 rounded border font-bold cursor-pointer transition-all ${!ltxFastMode ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500 border-gray-300 hover:border-indigo-400'}`}>
+                          🎬 Wan2.2 正式出片（~60s/条）
+                        </button>
+                        <button onClick={() => setLtxFastMode(true)}
+                          className={`text-xs px-2 py-1 rounded border font-bold cursor-pointer transition-all ${ltxFastMode ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-500 border-gray-300 hover:border-orange-400'}`}>
+                          ⚡ LTX 快速预览（~8s/条）
+                        </button>
+                      </div>
+                      <span className="text-gray-300 mx-1">|</span>
+                      <span className="text-xs text-gray-500 font-medium shrink-0">商品背景：</span>
+                      <div className="flex gap-1">
+                        {[{value:'gradient',label:'渐变',emoji:'🌈'},{value:'white',label:'纯白',emoji:'⬜'},{value:'warm',label:'暖色',emoji:'🟡'},{value:'dark',label:'深色',emoji:'⬛'}].map(opt => (
+                          <button key={opt.value} onClick={() => setLtxBackgroundStyle(opt.value)}
+                            className={`text-xs px-2 py-1 rounded border font-bold cursor-pointer transition-all ${ltxBackgroundStyle === opt.value ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-gray-500 border-gray-300 hover:border-teal-400'}`}>
+                            {opt.emoji} {opt.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    
+                    {ltxFastMode
+                      ? <div className="mt-2 text-[11px] text-orange-600 bg-orange-50 px-2 py-1 rounded border border-orange-100">⚡ 快速预览：LTX-Video ~8s/条，num_frames=25，steps=20，适合快速确认构图；正式出片请切换 Wan2.2。</div>
+                      : <div className="mt-2 text-[11px] text-indigo-600 bg-indigo-50 px-2 py-1 rounded border border-indigo-100">🎬 正式出片：Wan2.2 ~60s/条，num_frames=97，steps=50，有参考图时自动启用 I2V，CLIP 自动选最匹配角度。</div>
+                    }
+                  </div>
+
+                  {/* ── Seedance 逐条生成 ── */}
+                  <div className="border border-purple-100 rounded-lg overflow-hidden">
+                    <div className="flex justify-between items-center flex-wrap gap-3 p-4 bg-purple-50/60 border-b border-purple-100">
+                      <div className="flex flex-wrap gap-3 items-center">
+                        <span className="text-xs font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full">Seedance</span>
+                        <Button type="primary" icon={<VideoCameraOutlined />} onClick={handleGenerateVideo} loading={generatingVideo} className="bg-purple-600 font-bold">
+                          逐条生成切片
+                        </Button>
+                        {generatingVideo && (
+                          <span className="text-purple-600 font-bold text-xs flex items-center">
+                            <Spin size="small" className="mr-2"/>{videoRenderProgress}
+                            <Button type="text" danger size="small" icon={<CloseCircleOutlined />} className="ml-2 py-0" onClick={() => stopGeneration('video')} />
+                          </span>
+                        )}
+                      </div>
+                      {videoClips.some(v => v !== '') && (
+                        <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={handleDownloadVideos} loading={downloading} className="bg-green-600 font-bold">打包下载</Button>
+                      )}
+                    </div>
                     {videoClips.some(v => v !== '') && (
-                      <Button 
-                        size="small"
-                        type="primary" 
-                        icon={<DownloadOutlined />} 
-                        onClick={handleDownloadVideos} 
-                        loading={downloading}
-                        className="bg-green-600 font-bold"
-                      >
-                        一键打包下载全部切片
-                      </Button>
+                      <div className="p-4">
+                        <div className="grid grid-cols-4 lg:grid-cols-6 gap-3">
+                          {videoClips.filter(v => v).map((vidUrl, i) => (
+                            <div key={i} className="aspect-video bg-black border border-gray-200 rounded-lg flex items-center justify-center relative overflow-hidden shadow-sm group">
+                              <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] px-1.5 rounded z-10">切片 {i+1}</span>
+                              <video src={vidUrl} controls className="w-full h-full object-cover" />
+                              <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                                <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => window.open(vidUrl)} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </div>
 
-                  <div className="grid grid-cols-4 lg:grid-cols-6 gap-4">
-                    {videoClips.map((vidUrl, i) => (
-                      <div key={i} className="aspect-video bg-black border border-gray-200 rounded-lg flex items-center justify-center relative overflow-hidden shadow-sm group">
-                        <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] px-1.5 rounded z-10">分镜 {i+1}</span>
-                        {vidUrl ? (
-                          <>
-                            <video src={vidUrl} controls className="w-full h-full object-cover" />
-                            <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity z-10 flex gap-1">
-                              <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => window.open(vidUrl)} />
+                  {/* ── LTX RunPod：先生成分镜脚本，再批量渲染 ── */}
+                  <div className="border border-orange-100 rounded-lg overflow-hidden">
+                    <div className="flex justify-between items-center flex-wrap gap-3 p-4 bg-orange-50/60 border-b border-orange-100">
+                      <div className="flex flex-wrap gap-3 items-center">
+                        <span className="text-xs font-bold text-orange-700 bg-orange-100 px-2 py-0.5 rounded-full">LTX · RunPod</span>
+                        <Button icon={<RobotOutlined />} onClick={async () => {
+                          const pmReport = form.getFieldValue('pm_report');
+                          const opsReport = form.getFieldValue('base_desc') || '';
+                          if (!pmReport) { message.warning('请先生成策划案'); return; }
+                          setGeneratingScript(true);
+                          setVideoScript(null);
+                          message.loading({ content: '分镜脚本生成中...', key: 'tb_script', duration: 0 });
+                          try {
+                            const res = await fetch(`${API_BASE}/api/v1/video/design-script`, {
+                              method: 'POST', headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ pm_report: pmReport, ops_report: opsReport, platform: 'taobao', ratio: '16:9', num_clips: 12 })
+                            });
+                            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                            const data = await res.json();
+                            if (data.code !== 200) throw new Error(data.message || '后端异常');
+                            let clean: string = data.data;
+                            if (clean.includes('```json')) clean = clean.split('```json')[1].split('```')[0].trim();
+                            else if (clean.includes('```')) clean = clean.split('```')[1].split('```')[0].trim();
+                            setVideoScript(JSON.parse(clean));
+                            message.success({ content: '分镜脚本已就绪！', key: 'tb_script', duration: 3 });
+                          } catch (e: any) {
+                            message.error({ content: `脚本生成失败: ${e.message}`, key: 'tb_script', duration: 4 });
+                          } finally { setGeneratingScript(false); }
+                        }} loading={generatingScript} disabled={generatingLtxVideo}
+                        className="text-orange-600 border-orange-300 bg-orange-50 font-bold">
+                          生成分镜脚本
+                        </Button>
+                      </div>
+                    </div>
+
+                    {generatingScript && (
+                      <div className="p-4 bg-orange-50 flex items-center gap-3 text-orange-700 text-sm">
+                        <Spin size="small" /><span>AI 正在构思分镜脚本，请稍候...</span>
+                      </div>
+                    )}
+
+                    {!generatingScript && videoScript && (
+                      <div className="border-t border-orange-100">
+                        <div className="bg-gradient-to-r from-orange-500 to-red-500 px-4 py-2 flex items-center justify-between">
+                          <span className="text-white font-bold text-sm">📋 分镜脚本（{videoScript.storyboard.length} 个分镜）</span>
+                          <Button size="small" icon={<RocketOutlined />}
+                            onClick={async () => {
+                              if (!videoScript || videoScript.storyboard.length === 0) { message.warning('请先生成分镜脚本'); return; }
+                              setGeneratingLtxVideo(true);
+                              const total = videoScript.storyboard.length;
+                              setLtxVideoClips(Array(total).fill(''));
+                              const modeLabel = ltxFastMode ? 'LTX-Video 快速预览' : 'Wan2.2 正式出片';
+                              setLtxVideoProgress(`提交 ${total} 个分镜到 RunPod（${modeLabel}）...`);
+                              try {
+                                const res = await fetch(`${API_BASE}/api/v1/video/generate-from-script`, {
+                                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    global_style_prompt: videoScript.global_style_prompt,
+                                    ratio: videoScript.ratio || '16:9',
+                                    storyboard: videoScript.storyboard.map(s => ({ logic: s.logic, scene_prompt: s.scene_prompt, video_type: s.video_type || 'text-to-video' })),
+                                    image_urls: selectedR2Images,
+                                    num_frames: ltxFastMode ? 25 : 97,
+                                    steps: ltxFastMode ? 20 : 50,
+                                    fast: ltxFastMode,
+                                    background_style: ltxBackgroundStyle,
+                                  }),
+                                });
+                                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                                const data = await res.json();
+                                if (data.code === 200 && Array.isArray(data.results)) {
+                                  const newClips = Array(total).fill('');
+                                  data.results.forEach((r: { index: number; video_url?: string; error?: string }) => {
+                                    if (r.video_url) newClips[r.index] = r.video_url;
+                                    else if (r.error) message.warning(`分镜 ${r.index + 1} 失败: ${r.error}`);
+                                  });
+                                  setLtxVideoClips(newClips);
+                                  const fail = data.failed_count;
+                                  if (!fail) message.success(`🎬 LTX 全部 ${data.success_count} 个视频渲染完毕！`);
+                                  else message.warning(`渲染结束：${data.success_count} 成功，${fail} 失败`);
+                                } else throw new Error(data.detail || '后端异常');
+                              } catch (e: any) {
+                                message.error(`LTX 生成中断: ${e.message}`);
+                              } finally { setGeneratingLtxVideo(false); setLtxVideoProgress(''); }
+                            }}
+                            loading={generatingLtxVideo} disabled={generatingLtxVideo}
+                            className="bg-white/20 text-white border-white/40 font-bold text-xs">
+                            {generatingLtxVideo ? ltxVideoProgress || 'LTX 渲染中...' : '▶ LTX 生成视频（RunPod）'}
+                          </Button>
+                        </div>
+                        <div className="p-3 bg-orange-50/50 border-b border-orange-100">
+                          <span className="text-xs text-orange-500 font-medium">全局风格：</span>
+                          <span className="text-xs text-gray-600 ml-1">{videoScript.global_style_prompt}</span>
+                        </div>
+                        <div className="divide-y divide-gray-100 max-h-48 overflow-y-auto">
+                          {videoScript.storyboard.map((shot, idx) => (
+                            <div key={idx} className="flex gap-3 px-4 py-2 hover:bg-gray-50">
+                              <span className="flex-shrink-0 w-5 h-5 bg-orange-100 text-orange-700 rounded-full flex items-center justify-center text-xs font-bold mt-0.5">{idx+1}</span>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-0.5">
+                                  <span className="text-xs font-semibold text-gray-800">{shot.logic}</span>
+                                  {shot.video_type === 'image-to-video'
+                                    ? <span className="text-[10px] px-1 py-0.5 bg-orange-100 text-orange-600 rounded font-bold">🖼 图生视频</span>
+                                    : <span className="text-[10px] px-1 py-0.5 bg-gray-100 text-gray-500 rounded font-bold">✏️ 文生视频</span>}
+                                </div>
+                                <div className="text-[11px] text-gray-500 break-words">{shot.scene_prompt}</div>
+                              </div>
                             </div>
-                          </>
-                        ) : (
-                          <div className="flex flex-col items-center opacity-40 text-white">
-                            <VideoCameraOutlined className="text-2xl mb-2" />
-                            <span className="text-[10px] font-medium">切片 {i+1} (约5s)</span>
+                          ))}
+                        </div>
+
+                        {/* LTX 渲染结果网格 */}
+                        {(generatingLtxVideo || ltxVideoClips.some(v => v !== '')) && (
+                          <div className="border-t border-orange-100 p-3 bg-gray-50">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-xs font-bold text-gray-700">
+                                🎬 LTX 渲染结果
+                                {generatingLtxVideo && <span className="ml-2 text-orange-500 font-normal animate-pulse text-[11px]">{ltxVideoProgress}</span>}
+                              </span>
+                              {ltxVideoClips.some(v => v !== '') && (
+                                <Button size="small" icon={<DownloadOutlined />} loading={downloading}
+                                  onClick={async () => {
+                                    const valid = ltxVideoClips.filter(u => u);
+                                    if (!valid.length) return;
+                                    setDownloading(true);
+                                    message.loading({ content: '打包 LTX 视频...', key: 'ltx_dl' });
+                                    try {
+                                      const zip = new JSZip();
+                                      const folder = zip.folder('taobao_ltx_clips');
+                                      for (let i = 0; i < valid.length; i++) {
+                                        const r = await fetch(`${API_BASE}/api/v1/proxy/download?url=${encodeURIComponent(valid[i])}`);
+                                        folder?.file(`ltx_切片_${i+1}.mp4`, await r.blob());
+                                      }
+                                      saveAs(await zip.generateAsync({ type: 'blob' }), 'taobao_ltx_clips.zip');
+                                      message.success({ content: '下载完成！', key: 'ltx_dl' });
+                                    } catch { message.error({ content: '下载失败', key: 'ltx_dl' }); }
+                                    finally { setDownloading(false); }
+                                  }}
+                                  className="text-green-600 border-green-300 bg-green-50 font-bold">打包下载</Button>
+                              )}
+                            </div>
+                            <div className="grid grid-cols-4 lg:grid-cols-6 gap-2">
+                              {ltxVideoClips.map((vidUrl, i) => (
+                                <div key={i} className="aspect-video bg-black border border-gray-200 rounded flex items-center justify-center relative overflow-hidden group">
+                                  <span className="absolute top-0.5 left-0.5 bg-black/60 text-white text-[9px] px-1 rounded z-10">{i+1}</span>
+                                  {vidUrl ? (
+                                    <>
+                                      <video src={vidUrl} controls className="w-full h-full object-cover" />
+                                      <div className="absolute top-0.5 right-0.5 opacity-0 group-hover:opacity-100 z-10">
+                                        <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => window.open(vidUrl)} />
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <div className="flex flex-col items-center text-white">
+                                      {generatingLtxVideo
+                                        ? <><Spin size="small" /><span className="text-[8px] mt-1 opacity-60">渲染中</span></>
+                                        : <><VideoCameraOutlined className="text-sm opacity-40" /><span className="text-[8px] opacity-40">LTX</span></>}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         )}
                       </div>
-                    ))}
+                    )}
                   </div>
+
                 </div>
               </Form.Item>
 
@@ -1228,9 +1887,9 @@ export default function TaobaoPublish() {
           </Form>
         </div>
 
-        <div className="absolute bottom-0 left-0 w-full h-16 backdrop-blur-md bg-white/80 border-t border-gray-200 flex justify-center items-center gap-5 z-20">
-          <Button type="primary" size="large" className="bg-blue-600 w-[160px] font-bold rounded-full shadow-lg">提交宝贝信息</Button>
-          <Button size="large" className="w-[120px] rounded-full border-gray-300 font-medium">保存草稿</Button>
+        <div className="absolute bottom-0 left-0 w-full h-16 backdrop-blur-md bg-white/90 border-t border-orange-100 flex justify-center items-center gap-4 z-20 shadow-[0_-4px_20px_rgba(0,0,0,0.06)]">
+          <Button type="primary" size="large" className="!bg-gradient-to-r !from-orange-500 !to-red-500 !border-0 w-[160px] font-bold rounded-xl shadow-lg hover:shadow-orange-200">提交宝贝信息</Button>
+          <Button size="large" className="w-[120px] rounded-xl border-gray-200 font-medium text-gray-600 hover:border-orange-300 hover:text-orange-600">保存草稿</Button>
         </div>
       </div>
 
