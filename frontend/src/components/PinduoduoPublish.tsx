@@ -158,52 +158,35 @@ const TEXT_MODELS = [
   // 🎙️ 口播文案 & TTS 状态
   const [extractingScript, setExtractingScript] = useState(false);
   const [broadcastScript, setBroadcastScript] = useState('');
-  const [ttsVoice, setTtsVoice] = useState('zf_xiaobei');
-  const [ttsSpeed, setTtsSpeed] = useState(1.0);
-  const [generatingTts, setGeneratingTts] = useState(false);
-  const [ttsVoiceUrl, setTtsVoiceUrl] = useState('');
-  const ttsVoices = [
-    { id: 'zf_xiaobei', name: '小北（中文女声）' },
-    { id: 'zm_yunxi',   name: '云曦（中文男声）' },
-    { id: 'af_heart',   name: 'Heart（英文女声）' },
-    { id: 'af_bella',   name: 'Bella（英文女声）' },
-    { id: 'am_adam',    name: 'Adam（英文男声）'  },
-  ];
-  // TTS 服务部署状态（从 /api/v1/tts/status 获取）
-  const [ttsStatus, setTtsStatus] = useState<{ kokoro: boolean; cosyvoice: boolean; emotivoice: boolean }>({ kokoro: false, cosyvoice: false, emotivoice: false });
-  useEffect(() => {
-    fetch(`${API_BASE}/api/v1/tts/status`)
-      .then(r => r.json())
-      .then(d => {
-        if (d.code === 200) setTtsStatus({ kokoro: d.data.kokoro.ready, cosyvoice: d.data.cosyvoice.ready, emotivoice: d.data.emotivoice.ready });
-      })
-      .catch(() => {});
-  }, []);
 
-  // CosyVoice 2
-  const [generatingCosyVoice, setGeneratingCosyVoice] = useState(false);
-  const [cosyVoiceSpeaker, setCosyVoiceSpeaker] = useState('中文女声');
-  const [cosyVoiceEmotion, setCosyVoiceEmotion] = useState('neutral');
-  const [cosyVoiceUrl, setCosyVoiceUrl] = useState('');
-  // EmotiVoice
-  const [generatingEmotiVoice, setGeneratingEmotiVoice] = useState(false);
-  const [emotiVoiceSpeaker, setEmotiVoiceSpeaker] = useState('中文女声A');
-  const [emotiVoiceEmotion, setEmotiVoiceEmotion] = useState('neutral');
-  const [emotiVoiceUrl, setEmotiVoiceUrl] = useState('');
+  // VoxCPM2 TTS
+  const VOXCPM2_ENDPOINT = process.env.NEXT_PUBLIC_VOXCPM2_URL || 'https://tuolin2011--voxcpm2-api-factory-voxcpm2service-api-endpoint.modal.run';
+  const [generatingVoxCpm2, setGeneratingVoxCpm2] = useState(false);
+  const [previewingVoxCpm2, setPreviewingVoxCpm2] = useState(false);
+  const [voxCpm2CfgValue, setVoxCpm2CfgValue] = useState(2.0);
+  const [voxCpm2Timesteps, setVoxCpm2Timesteps] = useState(10);
+  const [voxCpm2Url, setVoxCpm2Url] = useState('');
+  const [voxCpm2PreviewUrl, setVoxCpm2PreviewUrl] = useState('');
+  // 选中的音色描述符（作为文案前缀使用）
+  const [voxCpm2VoiceDesc, setVoxCpm2VoiceDesc] = useState('声音甜美，语速适中，充满活力');
 
-  const EMOTION_OPTIONS = [
-    { value: 'neutral',   label: '😐 平静' },
-    { value: 'happy',     label: '😊 开心' },
-    { value: 'excited',   label: '🤩 激动兴奋' },
-    { value: 'sad',       label: '😢 悲伤' },
-    { value: 'angry',     label: '😠 生气' },
-    { value: 'tender',    label: '🥰 温柔' },
-    { value: 'lively',    label: '💃 活泼热情' },
-    { value: 'calm',      label: '🧘 平静沉稳' },
-    { value: 'whisper',   label: '🤫 轻声耳语' },
-    { value: 'confident', label: '💪 自信' },
-    { value: 'warm',      label: '🤗 亲切温暖' },
-    { value: 'serious',   label: '🎯 严肃专业' },
+  // 预设音色库（value = 自然语言描述符，直接插入文案括号前缀）
+  const VOXCPM2_VOICE_PRESETS = [
+    // ── 女声 ──
+    { group: '女声', value: '声音甜美，语速适中，充满活力',           label: '😊 甜美女声', preview: '你好，我是甜美女声，欢迎选购！' },
+    { group: '女声', value: '声音温柔亲切，语速稍慢，娓娓道来',       label: '🤗 温柔女声', preview: '你好，我是温柔女声，欢迎选购！' },
+    { group: '女声', value: '声音活泼热情，语速稍快，富有感染力',     label: '💃 活泼女声', preview: '你好，我是活泼女声，欢迎选购！' },
+    { group: '女声', value: '声音轻柔耳语，语速缓慢，温柔细腻',      label: '🤫 耳语女声', preview: '你好，我是耳语女声，欢迎选购！' },
+    { group: '女声', value: '声音专业干练，语速适中，清晰有力',       label: '💼 职场女声', preview: '你好，我是职场女声，欢迎选购！' },
+    // ── 男声 ──
+    { group: '男声', value: '声音低沉磁性，语速适中，沉稳有力',       label: '🎤 磁性男声', preview: '你好，我是磁性男声，欢迎选购！' },
+    { group: '男声', value: '中年男性，声音淳朴亲切，带着一点南方口音', label: '🧔 朴实男声', preview: '你好，我是朴实男声，欢迎选购！' },
+    { group: '男声', value: '声音激昂有力，语速稍快，充满激情',       label: '🤩 激情男声', preview: '你好，我是激情男声，欢迎选购！' },
+    { group: '男声', value: '声音沉稳专业，语速适中，权威可信',       label: '🎯 播报男声', preview: '你好，我是播报男声，欢迎选购！' },
+    // ── 特色 ──
+    { group: '特色', value: '老奶奶的声音，慈祥温和，语速缓慢',      label: '👵 慈祥奶奶', preview: '孩子，这是奶奶给你推荐的好东西！' },
+    { group: '特色', value: '声音阳光帅气，像年轻男大学生，语速适中', label: '🧑 阳光男生', preview: '兄弟姐妹们，这个真的超好用！' },
+    { group: '特色', value: '声音可爱甜萌，像小女孩，语速稍快',      label: '🎀 萌萌女生', preview: '哇！这个真的太可爱了，超推荐哦！' },
   ];
 
   // === 🚀 全局任务状态收集 ===
@@ -625,22 +608,23 @@ const TEXT_MODELS = [
     }
   };
 
-  // ─── 根据分镜脚本调用 LTX-Video 批量生成 ──────────────────────────────────
+  // ─── 根据分镜脚本调用 LTX-Video 批量生成（HTTP，一次性返回全部结果）──
   const _generateLtxFromScript = async () => {
     if (!script || script.storyboard.length === 0) { message.warning('请先生成分镜脚本'); return; }
     setGeneratingLtx(true);
     const total = script.storyboard.length;
     setLtxClips(Array(total).fill(''));
     const modeLabel = ltxFastMode ? 'LTX-Video 快速预览' : 'Wan2.2 正式出片';
-    setLtxProgress(`正在提交 ${total} 个分镜到 RunPod（${modeLabel}），请耐心等待渲染完成...`);
+    setLtxProgress(`提交渲染任务，共 ${total} 个分镜（${modeLabel}），请耐心等待...`);
+
     try {
       const res = await fetch(`${API_BASE}/api/v1/video/generate-from-script`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          global_style_prompt: script.global_style_prompt,
-          ratio: script.ratio || '16:9',
-          storyboard: script.storyboard.map(s => ({
+          global_style_prompt: script!.global_style_prompt,
+          ratio: script!.ratio || '16:9',
+          storyboard: script!.storyboard.map(s => ({
             logic: s.logic,
             scene_prompt: s.scene_prompt,
             video_type: s.video_type || 'text-to-video',
@@ -652,23 +636,19 @@ const TEXT_MODELS = [
           background_style: ltxBackgroundStyle,
         }),
       });
-      if (!res.ok) throw new Error(`LTX 接口异常 (HTTP ${res.status})`);
+      if (!res.ok) throw new Error(`渲染服务异常 (HTTP ${res.status})`);
       const data = await res.json();
-      if (data.code === 200 && Array.isArray(data.results)) {
-        const newClips = Array(total).fill('');
-        data.results.forEach((r: { index: number; video_url?: string; error?: string }) => {
-          if (r.video_url) newClips[r.index] = r.video_url;
-          else if (r.error) message.warning(`分镜 ${r.index + 1} 失败: ${r.error}`);
-        });
-        setLtxClips(newClips);
-        const ok = data.success_count, fail = data.failed_count;
-        if (fail === 0) message.success(`🎬 LTX 全部 ${ok} 个视频渲染完毕！`);
-        else message.warning(`渲染结束：${ok} 成功，${fail} 失败`);
-      } else {
-        throw new Error(data.detail || '后端返回异常');
+      if (data.code !== 200) throw new Error(data.message || '渲染服务返回异常');
+      const clips = Array(total).fill('');
+      for (const r of data.results) {
+        if (r.video_url) clips[r.index] = r.video_url;
+        else if (r.error) message.warning(`分镜 ${r.index + 1} 失败: ${r.error}`);
       }
+      setLtxClips([...clips]);
+      if (data.failed_count === 0) message.success(`🎬 LTX 全部 ${data.success_count} 个视频渲染完毕！`);
+      else message.warning(`渲染结束：${data.success_count} 成功，${data.failed_count} 失败`);
     } catch (e: any) {
-      message.error(`LTX 生成中断: ${e.message}`);
+      message.error(`LTX 生成失败: ${e.message}`);
     } finally {
       setGeneratingLtx(false);
       setLtxProgress('');
@@ -1336,6 +1316,7 @@ const TEXT_MODELS = [
     }
   };
 
+  // ─── 通用 LTX HTTP 生成（商品讲解视频 / 商详视频共用）────────────────
   const _generateLtx = async (
     scriptState: any,
     setGenerating: (v: boolean) => void,
@@ -1347,44 +1328,94 @@ const TEXT_MODELS = [
     const total = scriptState.storyboard.length;
     setClips(Array(total).fill(''));
     const modeLabel = ltxFastMode ? 'LTX-Video 快速预览' : 'Wan2.2 正式出片';
-    setProgress(`正在提交 ${total} 个分镜到 RunPod（${modeLabel}），请耐心等待渲染完成...`);
+    setProgress(`提交渲染任务，共 ${total} 个分镜（${modeLabel}），请耐心等待...`);
+
+    const ltxApiBase = "https://tuolin2011--omni-ltx-video-video-api.modal.run";
+
     try {
-      const res = await fetch(`${API_BASE}/api/v1/video/generate-from-script`, {
+      const res = await fetch(`${ltxApiBase}/api/v1/generate/storyboard/async`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          global_style_prompt: scriptState.global_style_prompt,
-          ratio: scriptState.ratio || '16:9',
-          storyboard: scriptState.storyboard.map((s: any) => ({
-            logic: s.logic,
-            scene_prompt: s.scene_prompt,
-            video_type: s.video_type || 'text-to-video',
-          })),
-          image_urls: selectedR2Images,
-          num_frames: ltxFastMode ? 25 : 97,
-          steps: ltxFastMode ? 20 : 50,
-          fast: ltxFastMode,
-          background_style: ltxBackgroundStyle,
+          shots: scriptState.storyboard.map((s: any) => ({
+            prompt: `${scriptState.global_style_prompt}, ${s.scene_prompt}`,
+            width: scriptState.ratio === '9:16' ? 480 : 704,
+            height: scriptState.ratio === '9:16' ? 854 : 480,
+            num_frames: ltxFastMode ? 25 : 97,
+            num_inference_steps: ltxFastMode ? 20 : 50,
+            fps: 24,
+            fast: ltxFastMode,
+            background_style: ltxBackgroundStyle,
+            reference_images: selectedR2Images.length > 0 ? [selectedR2Images[0]] : []
+          }))
         }),
       });
-      if (!res.ok) throw new Error(`LTX 接口异常 (HTTP ${res.status})`);
-      const data = await res.json();
-      if (data.code === 200 && Array.isArray(data.results)) {
-        const newClips = Array(total).fill('');
-        data.results.forEach((r: { index: number; video_url?: string; error?: string }) => {
-          if (r.video_url) newClips[r.index] = r.video_url;
-          else if (r.error) message.warning(`分镜 ${r.index + 1} 失败: ${r.error}`);
-        });
-        setClips(newClips);
-        const fail = data.failed_count;
-        if (fail === 0) message.success(`🎬 LTX 全部 ${data.success_count} 个视频渲染完毕！`);
-        else message.warning(`渲染结束：${data.success_count} 成功，${fail} 失败`);
-      } else {
-        throw new Error(data.detail || '后端返回异常');
-      }
+      if (!res.ok) throw new Error(`渲染服务异常 (HTTP ${res.status})`);
+      const { task_id } = await res.json();
+      
+      // 轮询状态
+      const pollInterval = setInterval(async () => {
+        try {
+          const pollRes = await fetch(`${ltxApiBase}/api/v1/tasks/${task_id}`);
+          if (!pollRes.ok) return;
+          const statusData = await pollRes.json();
+          
+          setProgress(`渲染中... ${statusData.progress}% (${statusData.done}/${statusData.total})`);
+          
+          // Update clips with R2 URLs as they become available
+          if (statusData.r2_urls) {
+            setClips((prevClips: string[]) => {
+              const newClips = [...prevClips];
+              statusData.r2_urls.forEach((url: string | null, i: number) => {
+                if (url && !newClips[i]) {
+                  newClips[i] = url;
+                }
+              });
+              return newClips;
+            });
+          }
+          
+          if (statusData.status === 'done') {
+            clearInterval(pollInterval);
+            setProgress('渲染完成');
+            
+            // If we have all R2 URLs, we don't need to download the ZIP
+            if (statusData.r2_urls && statusData.r2_urls.every((url: string | null) => url !== null)) {
+              setClips(statusData.r2_urls);
+            } else {
+              // Fallback to downloading ZIP if R2 URLs are missing
+              setProgress('渲染完成，正在下载...');
+              const dlRes = await fetch(`${ltxApiBase}/api/v1/tasks/${task_id}/download`);
+              const blob = await dlRes.blob();
+              const zip = await JSZip.loadAsync(blob);
+              
+              const newClips = new Array(total).fill('');
+              let idx = 0;
+              for (const [filename, file] of Object.entries(zip.files)) {
+                if (filename.endsWith('.mp4')) {
+                  const videoBlob = await file.async('blob');
+                  newClips[idx] = URL.createObjectURL(videoBlob);
+                  idx++;
+                }
+              }
+              setClips(newClips);
+            }
+            
+            setGenerating(false);
+            setProgress('');
+            message.success('LTX 视频生成完成');
+          } else if (statusData.status === 'failed') {
+            clearInterval(pollInterval);
+            setGenerating(false);
+            setProgress('');
+            message.error(`生成失败: ${statusData.error}`);
+          }
+        } catch (e) {
+          console.error('Poll error:', e);
+        }
+      }, 5000);
     } catch (e: any) {
-      message.error(`LTX 生成中断: ${e.message}`);
-    } finally {
+      message.error(`LTX 生成失败: ${e.message}`);
       setGenerating(false);
       setProgress('');
     }
@@ -1470,71 +1501,54 @@ const TEXT_MODELS = [
     }
   };
 
-  // 🎭 CosyVoice 2 合成
-  const handleGenerateCosyVoice = async () => {
-    if (!broadcastScript.trim()) return message.warning('请先提取或输入口播文案！');
-    setGeneratingCosyVoice(true);
-    setCosyVoiceUrl('');
-    message.loading({ content: '🎭 CosyVoice 2 合成中（约30~90秒）...', key: 'cosy_gen', duration: 0 });
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/tts/generate-cosyvoice`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: broadcastScript, speaker: cosyVoiceSpeaker, emotion: cosyVoiceEmotion, speed: ttsSpeed, product_name: selectedSkuName || 'product' }),
-      });
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `HTTP ${res.status}`); }
-      const data = await res.json();
-      if (data.code === 200 && data.data?.url) { setCosyVoiceUrl(data.data.url); message.success({ content: '🎉 CosyVoice 合成完成！已存入 R2 voice/', key: 'cosy_gen' }); }
-      else throw new Error(data.detail || '合成失败');
-    } catch (err: any) { message.error({ content: `CosyVoice 失败: ${err.message}`, key: 'cosy_gen' }); }
-    finally { setGeneratingCosyVoice(false); }
+  // 🎭 VoxCPM2 底层调用（可复用）
+  const _callVoxCpm2 = async (text: string, msgKey: string): Promise<string> => {
+    const params = new URLSearchParams({
+      text,
+      cfg_value: String(voxCpm2CfgValue),
+      timesteps: String(voxCpm2Timesteps),
+    });
+    const res = await fetch(`${VOXCPM2_ENDPOINT}?${params.toString()}`, { method: 'POST' });
+    if (!res.ok) throw new Error(`VoxCPM2 服务异常 (HTTP ${res.status})`);
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
   };
 
-  // 🎭 EmotiVoice 合成
-  const handleGenerateEmotiVoice = async () => {
+  // 🎭 VoxCPM2 合成正式口播（直连 Modal GPU 端点）
+  const handleGenerateVoxCpm2 = async () => {
     if (!broadcastScript.trim()) return message.warning('请先提取或输入口播文案！');
-    setGeneratingEmotiVoice(true);
-    setEmotiVoiceUrl('');
-    message.loading({ content: '🎭 EmotiVoice 合成中（约30~90秒）...', key: 'emoti_gen', duration: 0 });
+    setGeneratingVoxCpm2(true);
+    setVoxCpm2Url('');
+    message.loading({ content: '🎭 VoxCPM2 合成中，GPU 加速约10~30秒...', key: 'voxcpm2_gen', duration: 0 });
     try {
-      const res = await fetch(`${API_BASE}/api/v1/tts/generate-emotivoice`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: broadcastScript, speaker: emotiVoiceSpeaker, emotion: emotiVoiceEmotion, speed: ttsSpeed, product_name: selectedSkuName || 'product' }),
-      });
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `HTTP ${res.status}`); }
-      const data = await res.json();
-      if (data.code === 200 && data.data?.url) { setEmotiVoiceUrl(data.data.url); message.success({ content: '🎉 EmotiVoice 合成完成！已存入 R2 voice/', key: 'emoti_gen' }); }
-      else throw new Error(data.detail || '合成失败');
-    } catch (err: any) { message.error({ content: `EmotiVoice 失败: ${err.message}`, key: 'emoti_gen' }); }
-    finally { setGeneratingEmotiVoice(false); }
-  };
-
-  // 🎙️ 生成 TTS 语音并存入 R2
-  const handleGenerateTts = async () => {
-    if (!broadcastScript.trim()) return message.warning('请先输入或提取口播文案！');
-    setGeneratingTts(true);
-    message.loading({ content: '语音合成中，请稍候...', key: 'tts_gen', duration: 0 });
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/tts/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: broadcastScript, voice: ttsVoice, speed: ttsSpeed }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (data.code === 200 && data.data?.url) {
-        setTtsVoiceUrl(data.data.url);
-        message.success({ content: '语音生成成功，已存入 R2！', key: 'tts_gen', duration: 3 });
-      } else {
-        throw new Error(data.message || '生成失败');
-      }
+      // 将选定音色描述符作为括号前缀注入文案
+      const fullText = `(${voxCpm2VoiceDesc})${broadcastScript}`;
+      const url = await _callVoxCpm2(fullText, 'voxcpm2_gen');
+      setVoxCpm2Url(url);
+      message.success({ content: '🎉 VoxCPM2 合成完成！', key: 'voxcpm2_gen' });
     } catch (err: any) {
-      message.error({ content: `语音生成失败: ${err.message}`, key: 'tts_gen', duration: 4 });
+      message.error({ content: `VoxCPM2 失败: ${err.message}`, key: 'voxcpm2_gen' });
     } finally {
-      setGeneratingTts(false);
+      setGeneratingVoxCpm2(false);
     }
   };
+
+  // 🎧 VoxCPM2 音色试听（用预设的短句测试当前音色）
+  const handlePreviewVoxCpm2 = async (preset: typeof VOXCPM2_VOICE_PRESETS[0]) => {
+    setPreviewingVoxCpm2(true);
+    setVoxCpm2PreviewUrl('');
+    message.loading({ content: `🎧 试听"${preset.label}"...`, key: 'voxcpm2_preview', duration: 0 });
+    try {
+      const url = await _callVoxCpm2(`(${preset.value})${preset.preview}`, 'voxcpm2_preview');
+      setVoxCpm2PreviewUrl(url);
+      message.success({ content: `✅ 试听就绪！`, key: 'voxcpm2_preview', duration: 2 });
+    } catch (err: any) {
+      message.error({ content: `试听失败: ${err.message}`, key: 'voxcpm2_preview' });
+    } finally {
+      setPreviewingVoxCpm2(false);
+    }
+  };
+
 
   const handleDownloadSkuImages = async () => {
     const validImages = skuImages.filter(url => url);
@@ -1728,115 +1742,104 @@ const TEXT_MODELS = [
                 placeholder="点击「提取口播文案」从策划案中自动生成，也可直接在此输入或粘贴文案..."
               />
 
-              <div className="flex flex-wrap gap-3 items-center">
-                <span className="text-xs font-medium text-gray-600">声音：</span>
-                <Select
-                  value={ttsVoice}
-                  onChange={setTtsVoice}
-                  size="small"
-                  className="w-44"
-                  options={ttsVoices.map(v => ({ value: v.id, label: v.name }))}
-                />
-
-                <span className="text-xs font-medium text-gray-600">语速：</span>
-                <Select
-                  value={ttsSpeed}
-                  onChange={setTtsSpeed}
-                  size="small"
-                  className="w-24"
-                  options={[
-                    { value: 0.75, label: '0.75x 慢' },
-                    { value: 1.0,  label: '1.0x 正常' },
-                    { value: 1.25, label: '1.25x 快' },
-                    { value: 1.5,  label: '1.5x 更快' },
-                  ]}
-                />
-
-                <Button
-                  type="primary"
-                  icon={generatingTts ? <LoadingOutlined /> : <CustomerServiceOutlined />}
-                  onClick={handleGenerateTts}
-                  loading={generatingTts}
-                  disabled={!broadcastScript.trim()}
-                  className="bg-teal-600 border-teal-600 hover:bg-teal-700 font-bold"
-                  size="small"
-                >
-                  生成语音 &amp; 存入 R2
-                </Button>
-
-                {ttsVoiceUrl && (
-                  <>
-                    <Button
-                      size="small"
-                      icon={<DownloadOutlined />}
-                      onClick={() => window.open(ttsVoiceUrl, '_blank')}
-                      className="text-teal-700 border-teal-300"
-                    >
-                      下载语音
-                    </Button>
-                    <audio controls src={ttsVoiceUrl} className="h-8 flex-1 min-w-[200px]" />
-                  </>
-                )}
-              </div>
-
-              {/* ── CosyVoice 2 情绪合成 ── */}
+              {/* ── VoxCPM2 生成语音 ── */}
               <div className="mt-5 pt-4 border-t border-teal-100">
                 <div className="flex items-center gap-2 mb-3">
-                  <span className="text-xs font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full">CosyVoice 2</span>
-                  <span className="text-xs text-gray-500">阿里出品 · 原生情绪控制</span>
+                  <span className="text-xs font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full">VoxCPM2</span>
+                  <span className="text-xs text-gray-500">OpenBMB 出品 · 自然语言音色控制 · Modal GPU 加速</span>
                 </div>
-                <div className="flex flex-wrap gap-3 items-center">
-                  <span className="text-xs font-medium text-gray-600">声音：</span>
-                  <Select value={cosyVoiceSpeaker} onChange={setCosyVoiceSpeaker} size="small" className="w-32"
-                    options={[{value:'中文女声',label:'中文女声'},{value:'中文男声',label:'中文男声'},{value:'英文女声',label:'英文女声'},{value:'英文男声',label:'英文男声'}]} />
-                  <span className="text-xs font-medium text-gray-600">情绪：</span>
-                  <Select value={cosyVoiceEmotion} onChange={setCosyVoiceEmotion} size="small" className="w-36" options={EMOTION_OPTIONS} />
-                  <Button type="primary" size="small"
-                    icon={generatingCosyVoice ? <LoadingOutlined /> : <CustomerServiceOutlined />}
-                    onClick={handleGenerateCosyVoice} loading={generatingCosyVoice}
-                    disabled={!broadcastScript.trim() || !ttsStatus.cosyvoice}
-                    title={!ttsStatus.cosyvoice ? '需在 .env 配置 MODAL_COSYVOICE_URL 并部署' : undefined}
-                    className="bg-purple-600 border-purple-600 font-bold">
-                    {ttsStatus.cosyvoice ? 'CosyVoice 合成' : 'CosyVoice（未部署）'}
-                  </Button>
-                  {cosyVoiceUrl && <Button size="small" icon={<DownloadOutlined />} onClick={() => window.open(cosyVoiceUrl,'_blank')} className="text-purple-700 border-purple-300">下载</Button>}
-                </div>
-                {cosyVoiceUrl && (
-                  <div className="mt-3 p-3 bg-white rounded-lg border border-purple-200 flex items-center gap-3">
-                    <SoundOutlined className="text-purple-500 text-lg flex-shrink-0" />
-                    <audio src={cosyVoiceUrl} controls className="flex-1" style={{height:'32px'}} />
-                    <span className="text-[10px] text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full flex-shrink-0">✅ CosyVoice · R2 voice/</span>
-                  </div>
-                )}
-              </div>
 
-              {/* ── EmotiVoice 情绪合成 ── */}
-              <div className="mt-4 pt-4 border-t border-teal-100">
-                <div className="flex items-center gap-2 mb-3">
-                  <span className="text-xs font-bold text-orange-700 bg-orange-100 px-2 py-0.5 rounded-full">EmotiVoice</span>
-                  <span className="text-xs text-gray-500">网易云音乐开源 · 200+ 情绪风格</span>
+                {/* 音色预设选择器 */}
+                <div className="mb-3">
+                  <div className="text-xs font-medium text-gray-600 mb-2">选择音色（点击试听，双击选用）：</div>
+                  {(['女声','男声','特色'] as const).map(group => (
+                    <div key={group} className="mb-2">
+                      <div className="text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">{group}</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {VOXCPM2_VOICE_PRESETS.filter(p => p.group === group).map(preset => {
+                          const isActive = voxCpm2VoiceDesc === preset.value;
+                          return (
+                            <div key={preset.value} className="flex items-center gap-0">
+                              <button
+                                onClick={() => setVoxCpm2VoiceDesc(preset.value)}
+                                className={`text-xs px-2 py-1 rounded-l border font-medium cursor-pointer transition-all ${isActive ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-gray-600 border-gray-300 hover:border-purple-400 hover:text-purple-600'}`}
+                                title={`选用：${preset.value}`}
+                              >
+                                {preset.label}
+                              </button>
+                              <button
+                                onClick={() => handlePreviewVoxCpm2(preset)}
+                                disabled={previewingVoxCpm2}
+                                className={`text-[10px] px-1.5 py-1 rounded-r border-t border-r border-b cursor-pointer transition-all ${isActive ? 'bg-purple-500 text-white border-purple-500' : 'bg-gray-50 text-gray-400 border-gray-300 hover:bg-purple-50 hover:text-purple-500 hover:border-purple-300'} disabled:opacity-40`}
+                                title="试听此音色"
+                              >
+                                {previewingVoxCpm2 ? '...' : '▶'}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                  {/* 试听播放器 */}
+                  {voxCpm2PreviewUrl && (
+                    <div className="mt-2 p-2 bg-purple-50 rounded border border-purple-100 flex items-center gap-2">
+                      <span className="text-[10px] text-purple-500 font-medium shrink-0">🎧 试听：</span>
+                      <audio src={voxCpm2PreviewUrl} controls autoPlay className="flex-1" style={{height:'28px'}} />
+                    </div>
+                  )}
                 </div>
-                <div className="flex flex-wrap gap-3 items-center">
-                  <span className="text-xs font-medium text-gray-600">声音：</span>
-                  <Select value={emotiVoiceSpeaker} onChange={setEmotiVoiceSpeaker} size="small" className="w-32"
-                    options={[{value:'中文女声A',label:'中文女声A'},{value:'中文女声B',label:'中文女声B'},{value:'中文男声A',label:'中文男声A'},{value:'中文男声B',label:'中文男声B'}]} />
-                  <span className="text-xs font-medium text-gray-600">情绪：</span>
-                  <Select value={emotiVoiceEmotion} onChange={setEmotiVoiceEmotion} size="small" className="w-36" options={EMOTION_OPTIONS} />
+
+                {/* 当前选中音色显示 + 自定义输入 */}
+                <div className="mb-3 p-2 bg-purple-50 rounded border border-purple-100">
+                  <div className="text-[10px] text-purple-500 mb-1 font-medium">当前音色描述符（可直接编辑自定义）：</div>
+                  <Input
+                    value={voxCpm2VoiceDesc}
+                    onChange={e => setVoxCpm2VoiceDesc(e.target.value)}
+                    size="small"
+                    className="text-xs"
+                    placeholder="例如：声音低沉磁性，带港台腔，语速偏慢..."
+                  />
+                </div>
+
+                {/* 参数控制行 */}
+                <div className="flex flex-wrap gap-3 items-center mb-3">
+                  <span className="text-xs font-medium text-gray-600">引导强度：</span>
+                  <Select value={voxCpm2CfgValue} onChange={setVoxCpm2CfgValue} size="small" className="w-28"
+                    options={[
+                      { value: 1.5, label: '1.5 自然' },
+                      { value: 2.0, label: '2.0 标准' },
+                      { value: 3.0, label: '3.0 强调' },
+                    ]} />
+                  <span className="text-xs font-medium text-gray-600">推理步数：</span>
+                  <Select value={voxCpm2Timesteps} onChange={setVoxCpm2Timesteps} size="small" className="w-28"
+                    options={[
+                      { value: 5,  label: '5 步 极速' },
+                      { value: 10, label: '10 步 标准' },
+                      { value: 20, label: '20 步 精细' },
+                    ]} />
                   <Button type="primary" size="small"
-                    icon={generatingEmotiVoice ? <LoadingOutlined /> : <CustomerServiceOutlined />}
-                    onClick={handleGenerateEmotiVoice} loading={generatingEmotiVoice}
-                    disabled={!broadcastScript.trim() || !ttsStatus.emotivoice}
-                    title={!ttsStatus.emotivoice ? '需在 .env 配置 MODAL_EMOTIVOICE_URL 并部署' : undefined}
-                    className="bg-orange-500 border-orange-500 font-bold">
-                    {ttsStatus.emotivoice ? 'EmotiVoice 合成' : 'EmotiVoice（未部署）'}
+                    icon={generatingVoxCpm2 ? <LoadingOutlined /> : <CustomerServiceOutlined />}
+                    onClick={handleGenerateVoxCpm2}
+                    loading={generatingVoxCpm2}
+                    disabled={!broadcastScript.trim()}
+                    className="bg-purple-600 border-purple-600 font-bold">
+                    生成完整口播语音
                   </Button>
-                  {emotiVoiceUrl && <Button size="small" icon={<DownloadOutlined />} onClick={() => window.open(emotiVoiceUrl,'_blank')} className="text-orange-700 border-orange-300">下载</Button>}
+                  {voxCpm2Url && (
+                    <Button size="small" icon={<DownloadOutlined />}
+                      onClick={() => { const a = document.createElement('a'); a.href = voxCpm2Url; a.download = 'voxcpm2_voice.wav'; a.click(); }}
+                      className="text-purple-700 border-purple-300">
+                      下载 WAV
+                    </Button>
+                  )}
                 </div>
-                {emotiVoiceUrl && (
-                  <div className="mt-3 p-3 bg-white rounded-lg border border-orange-200 flex items-center gap-3">
-                    <SoundOutlined className="text-orange-500 text-lg flex-shrink-0" />
-                    <audio src={emotiVoiceUrl} controls className="flex-1" style={{height:'32px'}} />
-                    <span className="text-[10px] text-orange-600 bg-orange-50 px-2 py-0.5 rounded-full flex-shrink-0">✅ EmotiVoice · R2 voice/</span>
+
+                {voxCpm2Url && (
+                  <div className="p-3 bg-white rounded-lg border border-purple-200 flex items-center gap-3">
+                    <SoundOutlined className="text-purple-500 text-lg flex-shrink-0" />
+                    <audio src={voxCpm2Url} controls className="flex-1" style={{height:'32px'}} />
+                    <span className="text-[10px] text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full flex-shrink-0">✅ VoxCPM2 · WAV</span>
                   </div>
                 )}
               </div>

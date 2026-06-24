@@ -1,7 +1,18 @@
 # backend/app/api/core/services/storage.py
 """
-Cloudflare R2 对象存储服务封装。
-所有 R2 操作统一在此模块，main.py 和路由层不再直接操作 boto3。
+对象存储服务封装（S3 兼容，多后端可配置）。
+
+支持的存储后端（均通过 S3 兼容协议接入，由 boto3 统一驱动）：
+  • Cloudflare R2   —— 海外，默认
+  • 阿里云 OSS       —— 国内推荐，国内访问延迟低
+  • 腾讯云 COS       —— 国内备选
+  • 任意 S3 兼容存储 —— MinIO / 自建等
+
+切换方式：在 .env 设置 STORAGE_PROVIDER=r2|oss|cos|s3 并配置对应的
+endpoint / domain / key / bucket（统一用 STORAGE_* 前缀的环境变量；
+为向后兼容，未设置 STORAGE_* 时回退读取旧的 R2_* 变量）。
+
+所有存储操作统一在此模块，main.py 和路由层不再直接操作 boto3。
 """
 
 import os
@@ -15,15 +26,43 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-class R2Config:
-    ENDPOINT_URL: str = os.environ.get(
-        "R2_ENDPOINT_URL",
-        "https://07671f3a11d783cb639fb2dc30ed4ae2.r2.cloudflarestorage.com",
+def _env(*names: str, default: str = "") -> str:
+    """按优先级读取多个环境变量名，返回第一个非空值（用于 STORAGE_* → R2_* 向后兼容）。"""
+    for name in names:
+        val = os.environ.get(name)
+        if val:
+            return val
+    return default
+
+
+class StorageConfig:
+    """
+    通用对象存储配置（S3 兼容）。
+
+    优先读取 STORAGE_* 变量，未设置时回退到旧的 R2_* 变量（向后兼容）。
+
+    各后端 endpoint 示例：
+      R2:  https://<account>.r2.cloudflarestorage.com   region=auto
+      OSS: https://oss-cn-hangzhou.aliyuncs.com          region=oss-cn-hangzhou
+      COS: https://cos.ap-guangzhou.myqcloud.com         region=ap-guangzhou
+    """
+
+    # 存储后端类型：r2 / oss / cos / s3（仅用于日志和 region 默认值推断）
+    PROVIDER: str = _env("STORAGE_PROVIDER", default="r2").lower()
+
+    ENDPOINT_URL: str = _env(
+        "STORAGE_ENDPOINT_URL", "R2_ENDPOINT_URL",
+        default="https://07671f3a11d783cb639fb2dc30ed4ae2.r2.cloudflarestorage.com",
     )
-    PUBLIC_DOMAIN: str = os.environ.get("R2_PUBLIC_DOMAIN", "https://assets.laotuo.top")
-    ACCESS_KEY_ID: str = os.environ.get("R2_ACCESS_KEY_ID", "")
-    SECRET_ACCESS_KEY: str = os.environ.get("R2_SECRET_ACCESS_KEY", "")
-    BUCKET_NAME: str = os.environ.get("R2_BUCKET_NAME", "ai-products")
+    PUBLIC_DOMAIN: str = _env(
+        "STORAGE_PUBLIC_DOMAIN", "R2_PUBLIC_DOMAIN",
+        default="https://assets.laotuo.top",
+    )
+    ACCESS_KEY_ID: str = _env("STORAGE_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID")
+    SECRET_ACCESS_KEY: str = _env("STORAGE_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY")
+    BUCKET_NAME: str = _env("STORAGE_BUCKET_NAME", "R2_BUCKET_NAME", default="ai-products")
+    # region：R2 用 "auto"，OSS/COS 需填具体区域（如 oss-cn-hangzhou / ap-guangzhou）
+    REGION: str = _env("STORAGE_REGION", "R2_REGION", default="auto")
 
     @classmethod
     def public_url(cls, file_key: str) -> str:
@@ -31,6 +70,10 @@ class R2Config:
         if not domain.startswith(("http://", "https://")):
             domain = f"https://{domain}"
         return f"{domain}/{file_key}"
+
+
+# 向后兼容别名：旧代码中引用的 R2Config 仍可用
+R2Config = StorageConfig
 
 
 def _build_s3_client():
@@ -42,11 +85,11 @@ def _build_s3_client():
     )
     return boto3.client(
         "s3",
-        endpoint_url=R2Config.ENDPOINT_URL,
-        aws_access_key_id=R2Config.ACCESS_KEY_ID,
-        aws_secret_access_key=R2Config.SECRET_ACCESS_KEY,
+        endpoint_url=StorageConfig.ENDPOINT_URL,
+        aws_access_key_id=StorageConfig.ACCESS_KEY_ID,
+        aws_secret_access_key=StorageConfig.SECRET_ACCESS_KEY,
         config=cfg,
-        region_name="auto",
+        region_name=StorageConfig.REGION,
     )
 
 

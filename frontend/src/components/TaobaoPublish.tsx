@@ -139,48 +139,12 @@ export default function TaobaoPublish() {
   const [ttsSpeed, setTtsSpeed] = useState(1.0);
   const [generatingTts, setGeneratingTts] = useState(false);
   const [ttsVoiceUrl, setTtsVoiceUrl] = useState('');
-  const [ttsVoices, setTtsVoices] = useState([
-    { id: 'zf_xiaobei', name: '小北（中文女声）' },
-    { id: 'zm_yunxi',   name: '云曦（中文男声）' },
-    { id: 'af_heart',   name: 'Heart（英文女声）' },
-    { id: 'af_bella',   name: 'Bella（英文女声）' },
-    { id: 'am_adam',    name: 'Adam（英文男声）'  },
-  ]);
-  // TTS 服务部署状态
-  const [ttsStatus, setTtsStatus] = useState<{ kokoro: boolean; cosyvoice: boolean; emotivoice: boolean }>({ kokoro: false, cosyvoice: false, emotivoice: false });
-  useEffect(() => {
-    fetch(`${API_BASE}/api/v1/tts/status`)
-      .then(r => r.json())
-      .then(d => {
-        if (d.code === 200) setTtsStatus({ kokoro: d.data.kokoro.ready, cosyvoice: d.data.cosyvoice.ready, emotivoice: d.data.emotivoice.ready });
-      })
-      .catch(() => {});
-  }, []);
-  // CosyVoice 2
-  const [generatingCosyVoice, setGeneratingCosyVoice] = useState(false);
-  const [cosyVoiceSpeaker, setCosyVoiceSpeaker] = useState('中文女声');
-  const [cosyVoiceEmotion, setCosyVoiceEmotion] = useState('neutral');
-  const [cosyVoiceUrl, setCosyVoiceUrl] = useState('');
-  // EmotiVoice
-  const [generatingEmotiVoice, setGeneratingEmotiVoice] = useState(false);
-  const [emotiVoiceSpeaker, setEmotiVoiceSpeaker] = useState('中文女声A');
-  const [emotiVoiceEmotion, setEmotiVoiceEmotion] = useState('neutral');
-  const [emotiVoiceUrl, setEmotiVoiceUrl] = useState('');
-
-  const EMOTION_OPTIONS = [
-    { value: 'neutral',   label: '😐 平静' },
-    { value: 'happy',     label: '😊 开心' },
-    { value: 'excited',   label: '🤩 激动兴奋' },
-    { value: 'sad',       label: '😢 悲伤' },
-    { value: 'angry',     label: '😠 生气' },
-    { value: 'tender',    label: '🥰 温柔' },
-    { value: 'lively',    label: '💃 活泼热情' },
-    { value: 'calm',      label: '🧘 平静沉稳' },
-    { value: 'whisper',   label: '🤫 轻声耳语' },
-    { value: 'confident', label: '💪 自信' },
-    { value: 'warm',      label: '🤗 亲切温暖' },
-    { value: 'serious',   label: '🎯 严肃专业' },
-  ];
+  // VoxCPM2 TTS
+  const VOXCPM2_ENDPOINT = process.env.NEXT_PUBLIC_VOXCPM2_URL || 'https://tuolin2011--voxcpm2-api-factory-voxcpm2service-api-endpoint.modal.run';
+  const [generatingVoxCpm2, setGeneratingVoxCpm2] = useState(false);
+  const [voxCpm2CfgValue, setVoxCpm2CfgValue] = useState(2.0);
+  const [voxCpm2Timesteps, setVoxCpm2Timesteps] = useState(10);
+  const [voxCpm2Url, setVoxCpm2Url] = useState('');
 
   // === 🚀 全局任务状态收集 ===
   const activeTasks = [
@@ -1034,65 +998,32 @@ export default function TaobaoPublish() {
     }
   };
 
-  // 🎭 CosyVoice 2 合成
-  const handleGenerateCosyVoice = async () => {
+  // 🎭 VoxCPM2 合成（直连 Modal GPU 端点，返回 WAV 音频流）
+  const handleGenerateVoxCpm2 = async () => {
     if (!broadcastScript.trim()) return message.warning('请先提取或输入口播文案！');
-    setGeneratingCosyVoice(true);
-    setCosyVoiceUrl('');
-    message.loading({ content: '🎭 CosyVoice 2 合成中（约30~90秒）...', key: 'cosy_gen', duration: 0 });
+    setGeneratingVoxCpm2(true);
+    setVoxCpm2Url('');
+    message.loading({ content: '🎭 VoxCPM2 合成中，GPU 加速约10~30秒...', key: 'voxcpm2_gen', duration: 0 });
     try {
-      const res = await fetch(`${API_BASE}/api/v1/tts/generate-cosyvoice`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: broadcastScript,
-          speaker: cosyVoiceSpeaker,
-          emotion: cosyVoiceEmotion,
-          speed: ttsSpeed,
-          product_name: form.getFieldValue('target_sku') || 'product',
-        }),
+      const params = new URLSearchParams({
+        text: broadcastScript,
+        cfg_value: String(voxCpm2CfgValue),
+        timesteps: String(voxCpm2Timesteps),
       });
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `HTTP ${res.status}`); }
-      const data = await res.json();
-      if (data.code === 200 && data.data?.url) {
-        setCosyVoiceUrl(data.data.url);
-        message.success({ content: '🎉 CosyVoice 合成完成！已存入 R2 voice/', key: 'cosy_gen' });
-      } else { throw new Error(data.detail || '合成失败'); }
+      const res = await fetch(`${VOXCPM2_ENDPOINT}?${params.toString()}`, { method: 'POST' });
+      if (!res.ok) throw new Error(`VoxCPM2 服务异常 (HTTP ${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      setVoxCpm2Url(url);
+      message.success({ content: '🎉 VoxCPM2 合成完成！', key: 'voxcpm2_gen' });
     } catch (err: any) {
-      message.error({ content: `CosyVoice 失败: ${err.message}`, key: 'cosy_gen' });
-    } finally { setGeneratingCosyVoice(false); }
+      message.error({ content: `VoxCPM2 失败: ${err.message}`, key: 'voxcpm2_gen' });
+    } finally {
+      setGeneratingVoxCpm2(false);
+    }
   };
 
-  // 🎭 EmotiVoice 合成
-  const handleGenerateEmotiVoice = async () => {
-    if (!broadcastScript.trim()) return message.warning('请先提取或输入口播文案！');
-    setGeneratingEmotiVoice(true);
-    setEmotiVoiceUrl('');
-    message.loading({ content: '🎭 EmotiVoice 合成中（约30~90秒）...', key: 'emoti_gen', duration: 0 });
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/tts/generate-emotivoice`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: broadcastScript,
-          speaker: emotiVoiceSpeaker,
-          emotion: emotiVoiceEmotion,
-          speed: ttsSpeed,
-          product_name: form.getFieldValue('target_sku') || 'product',
-        }),
-      });
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `HTTP ${res.status}`); }
-      const data = await res.json();
-      if (data.code === 200 && data.data?.url) {
-        setEmotiVoiceUrl(data.data.url);
-        message.success({ content: '🎉 EmotiVoice 合成完成！已存入 R2 voice/', key: 'emoti_gen' });
-      } else { throw new Error(data.detail || '合成失败'); }
-    } catch (err: any) {
-      message.error({ content: `EmotiVoice 失败: ${err.message}`, key: 'emoti_gen' });
-    } finally { setGeneratingEmotiVoice(false); }
-  };
-
-  // 🔊 调用 TTS 生成语音并存入 R2
+  // 🔊 (kept for compatibility — not shown in UI)
   const handleGenerateTts = async () => {
     if (!broadcastScript.trim()) return message.warning('请先提取或输入口播文案！');
     setGeneratingTts(true);
@@ -1269,170 +1200,51 @@ export default function TaobaoPublish() {
                   placeholder="点击「提取口播文案」从策划案中自动生成，也可直接在此输入或粘贴文案..."
                 />
 
-                {/* TTS 控制栏 */}
-                <div className="flex flex-wrap gap-3 items-center">
-                  <span className="text-xs font-medium text-gray-600">声音：</span>
-                  <Select
-                    value={ttsVoice}
-                    onChange={setTtsVoice}
-                    size="small"
-                    className="w-44"
-                    options={ttsVoices.map(v => ({ value: v.id, label: v.name }))}
-                  />
-
-                  <span className="text-xs font-medium text-gray-600">语速：</span>
-                  <Select
-                    value={ttsSpeed}
-                    onChange={setTtsSpeed}
-                    size="small"
-                    className="w-24"
-                    options={[
-                      { value: 0.75, label: '0.75x 慢' },
-                      { value: 1.0,  label: '1.0x 正常' },
-                      { value: 1.25, label: '1.25x 快' },
-                      { value: 1.5,  label: '1.5x 更快' },
-                    ]}
-                  />
-
-                  <Button
-                    type="primary"
-                    icon={generatingTts ? <LoadingOutlined /> : <CustomerServiceOutlined />}
-                    onClick={handleGenerateTts}
-                    loading={generatingTts}
-                    disabled={!broadcastScript.trim()}
-                    className="bg-teal-600 border-teal-600 hover:bg-teal-700 font-bold"
-                    size="small"
-                  >
-                    生成语音 &amp; 存入 R2
-                  </Button>
-
-                  {ttsVoiceUrl && (
-                    <Button
-                      size="small"
-                      icon={<DownloadOutlined />}
-                      onClick={() => window.open(ttsVoiceUrl, '_blank')}
-                      className="text-teal-700 border-teal-300"
-                    >
-                      下载语音
-                    </Button>
-                  )}
-                </div>
-
-                {/* 音频播放器（生成完成后显示） */}
-                {ttsVoiceUrl && (
-                  <div className="mt-4 p-3 bg-white rounded-lg border border-teal-200 flex items-center gap-3">
-                    <SoundOutlined className="text-teal-500 text-lg flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <audio src={ttsVoiceUrl} controls className="w-full" style={{ height: '32px' }} />
-                    </div>
-                    <span className="text-[10px] text-teal-600 bg-teal-50 px-2 py-0.5 rounded-full flex-shrink-0 whitespace-nowrap">✅ 已存入 R2 voice/</span>
-                  </div>
-                )}
-
-                {/* ── CosyVoice 2 情绪合成 ── */}
+                {/* ── VoxCPM2 生成语音 ── */}
                 <div className="mt-5 pt-4 border-t border-teal-100">
                   <div className="flex items-center gap-2 mb-3">
-                    <span className="text-xs font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full">CosyVoice 2</span>
-                    <span className="text-xs text-gray-500">阿里出品 · 原生情绪控制</span>
+                    <span className="text-xs font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full">VoxCPM2</span>
+                    <span className="text-xs text-gray-500">OpenBMB 出品 · 自然语言音色控制 · Modal GPU 加速</span>
+                  </div>
+                  <div className="mb-2 text-[11px] text-purple-600 bg-purple-50 px-2 py-1 rounded border border-purple-100">
+                    💡 在文案开头用括号描述音色，例如：<code className="bg-purple-100 px-1 rounded">(声音甜美，语速稍快)</code> 你好呀！
                   </div>
                   <div className="flex flex-wrap gap-3 items-center">
-                    <span className="text-xs font-medium text-gray-600">声音：</span>
-                    <Select
-                      value={cosyVoiceSpeaker}
-                      onChange={setCosyVoiceSpeaker}
-                      size="small"
-                      className="w-32"
+                    <span className="text-xs font-medium text-gray-600">引导强度：</span>
+                    <Select value={voxCpm2CfgValue} onChange={setVoxCpm2CfgValue} size="small" className="w-28"
                       options={[
-                        { value: '中文女声', label: '中文女声' },
-                        { value: '中文男声', label: '中文男声' },
-                        { value: '英文女声', label: '英文女声' },
-                        { value: '英文男声', label: '英文男声' },
-                      ]}
-                    />
-                    <span className="text-xs font-medium text-gray-600">情绪：</span>
-                    <Select
-                      value={cosyVoiceEmotion}
-                      onChange={setCosyVoiceEmotion}
-                      size="small"
-                      className="w-36"
-                      options={EMOTION_OPTIONS}
-                    />
-                    <Button
-                      type="primary"
-                      size="small"
-                      icon={generatingCosyVoice ? <LoadingOutlined /> : <CustomerServiceOutlined />}
-                      onClick={handleGenerateCosyVoice}
-                      loading={generatingCosyVoice}
+                        { value: 1.5, label: '1.5 自然' },
+                        { value: 2.0, label: '2.0 标准' },
+                        { value: 3.0, label: '3.0 强调' },
+                      ]} />
+                    <span className="text-xs font-medium text-gray-600">推理步数：</span>
+                    <Select value={voxCpm2Timesteps} onChange={setVoxCpm2Timesteps} size="small" className="w-28"
+                      options={[
+                        { value: 5,  label: '5 步 极速' },
+                        { value: 10, label: '10 步 标准' },
+                        { value: 20, label: '20 步 精细' },
+                      ]} />
+                    <Button type="primary" size="small"
+                      icon={generatingVoxCpm2 ? <LoadingOutlined /> : <CustomerServiceOutlined />}
+                      onClick={handleGenerateVoxCpm2}
+                      loading={generatingVoxCpm2}
                       disabled={!broadcastScript.trim()}
-                      className="bg-purple-600 border-purple-600 font-bold"
-                    >
-                      CosyVoice 合成
+                      className="bg-purple-600 border-purple-600 font-bold">
+                      VoxCPM2 生成语音
                     </Button>
-                    {cosyVoiceUrl && (
-                      <Button size="small" icon={<DownloadOutlined />} onClick={() => window.open(cosyVoiceUrl, '_blank')} className="text-purple-700 border-purple-300">下载</Button>
+                    {voxCpm2Url && (
+                      <Button size="small" icon={<DownloadOutlined />}
+                        onClick={() => { const a = document.createElement('a'); a.href = voxCpm2Url; a.download = 'voxcpm2_voice.wav'; a.click(); }}
+                        className="text-purple-700 border-purple-300">
+                        下载 WAV
+                      </Button>
                     )}
                   </div>
-                  {cosyVoiceUrl && (
+                  {voxCpm2Url && (
                     <div className="mt-3 p-3 bg-white rounded-lg border border-purple-200 flex items-center gap-3">
                       <SoundOutlined className="text-purple-500 text-lg flex-shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <audio src={cosyVoiceUrl} controls className="w-full" style={{ height: '32px' }} />
-                      </div>
-                      <span className="text-[10px] text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full flex-shrink-0 whitespace-nowrap">✅ CosyVoice · R2 voice/</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* ── EmotiVoice 情绪合成 ── */}
-                <div className="mt-4 pt-4 border-t border-teal-100">
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="text-xs font-bold text-orange-700 bg-orange-100 px-2 py-0.5 rounded-full">EmotiVoice</span>
-                    <span className="text-xs text-gray-500">网易云音乐开源 · 200+ 情绪风格</span>
-                  </div>
-                  <div className="flex flex-wrap gap-3 items-center">
-                    <span className="text-xs font-medium text-gray-600">声音：</span>
-                    <Select
-                      value={emotiVoiceSpeaker}
-                      onChange={setEmotiVoiceSpeaker}
-                      size="small"
-                      className="w-32"
-                      options={[
-                        { value: '中文女声A', label: '中文女声A' },
-                        { value: '中文女声B', label: '中文女声B' },
-                        { value: '中文男声A', label: '中文男声A' },
-                        { value: '中文男声B', label: '中文男声B' },
-                      ]}
-                    />
-                    <span className="text-xs font-medium text-gray-600">情绪：</span>
-                    <Select
-                      value={emotiVoiceEmotion}
-                      onChange={setEmotiVoiceEmotion}
-                      size="small"
-                      className="w-36"
-                      options={EMOTION_OPTIONS}
-                    />
-                    <Button
-                      type="primary"
-                      size="small"
-                      icon={generatingEmotiVoice ? <LoadingOutlined /> : <CustomerServiceOutlined />}
-                      onClick={handleGenerateEmotiVoice}
-                      loading={generatingEmotiVoice}
-                      disabled={!broadcastScript.trim()}
-                      className="bg-orange-500 border-orange-500 font-bold"
-                    >
-                      EmotiVoice 合成
-                    </Button>
-                    {emotiVoiceUrl && (
-                      <Button size="small" icon={<DownloadOutlined />} onClick={() => window.open(emotiVoiceUrl, '_blank')} className="text-orange-700 border-orange-300">下载</Button>
-                    )}
-                  </div>
-                  {emotiVoiceUrl && (
-                    <div className="mt-3 p-3 bg-white rounded-lg border border-orange-200 flex items-center gap-3">
-                      <SoundOutlined className="text-orange-500 text-lg flex-shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <audio src={emotiVoiceUrl} controls className="w-full" style={{ height: '32px' }} />
-                      </div>
-                      <span className="text-[10px] text-orange-600 bg-orange-50 px-2 py-0.5 rounded-full flex-shrink-0 whitespace-nowrap">✅ EmotiVoice · R2 voice/</span>
+                      <audio src={voxCpm2Url} controls className="flex-1" style={{height:'32px'}} />
+                      <span className="text-[10px] text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full flex-shrink-0">✅ VoxCPM2 · WAV</span>
                     </div>
                   )}
                 </div>

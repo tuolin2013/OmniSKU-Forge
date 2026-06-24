@@ -117,14 +117,20 @@ async def pm_analyze_stream(req: PmAnalyzeRequest):
         yield "【系统提示】✅ [市场调研] 分析完毕，[文案策划智能体] 正在生成双轴矩阵策划案...\n\n"
         yield "================================================\n\n"
 
-        for chunk in agents.run_pm_agent_stream(
-            sku_info=sku_info,
-            text_desc=req.text_desc,
-            image_urls=req.image_urls,
-            model=req.model,
-            research_report=research_report,
-        ):
-            yield chunk
+        try:
+            for chunk in agents.run_pm_agent_stream(
+                sku_info=sku_info,
+                text_desc=req.text_desc,
+                image_urls=req.image_urls,
+                model=req.model,
+                research_report=research_report,
+            ):
+                yield chunk
+                await asyncio.sleep(0)
+        except Exception as e:
+            logger.error(f"pm_analyze_stream error: {e}")
+            # 💡 修复了这里的换行符语法错误
+            yield f"\n\n【系统提示】❌ 生成中断: {str(e)}\n\n"
 
     return StreamingResponse(_generate(), headers=_stream_headers(), media_type="text/plain")
 

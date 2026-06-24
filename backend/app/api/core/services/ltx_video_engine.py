@@ -45,21 +45,8 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # ─── 配置 ──────────────────────────────────────────────────────────────────────
+# 视频生成服务的 base URL（RunPod、Modal 或其他部署均通过此变量配置）
 LTX_VIDEO_BASE_URL: str = os.environ.get("LTX_VIDEO_BASE_URL", "").rstrip("/")
-# Modal 部署的视频服务 URL（优先级高于 RunPod，RunPod 未配置时自动回退到 Modal）
-MODAL_VIDEO_URL: str = os.environ.get("MODAL_VIDEO_URL", "").rstrip("/")
-
-def _get_video_base_url() -> str:
-    """
-    返回当前可用的视频服务 base URL。
-    优先级：LTX_VIDEO_BASE_URL（RunPod）> MODAL_VIDEO_URL（Modal）。
-    两者均未配置则返回空字符串。
-    """
-    if LTX_VIDEO_BASE_URL:
-        return LTX_VIDEO_BASE_URL
-    if MODAL_VIDEO_URL:
-        return MODAL_VIDEO_URL
-    return ""
 
 # Connect + send-body timeout: raised to 120s to handle large base64 payloads
 # (12 shots × 3 reference images ≈ several MB upload over RunPod proxy)
@@ -501,6 +488,101 @@ def generate_storyboard_ltx_async(
 
 
 # ─── 单分镜生成（兼容旧接口） ──────────────────────────────────────────────────
+
+def generate_video_ltx_async(
+    prompt: str,
+    image_urls: Optional[list[str]] = None,
+    ratio: str = "16:9",
+    num_frames: int = 97,
+    steps: int = 50,
+    cfg_scale: float = 3.5,
+    negative_prompt: str = "worst quality, inconsistent motion, blurry, jittery, distorted",
+    fast: bool = False,
+    background_style: str = "gradient",
+) -> str:
+    """
+    异步单分镜生成（调用 Modal 的 /api/v1/generate/async）。
+    返回 task_id 或 "❌..."
+    """
+    if not LTX_VIDEO_BASE_URL:
+        return "❌ LTX_VIDEO_BASE_URL 未配置"
+
+    width, height = _RATIO_SIZES.get(ratio, (1280, 720))
+    frames = _nearest_8n_plus_1(num_frames) if fast else _nearest_4n_plus_1(num_frames)
+
+    ref_images_b64: list[str] = []
+    if image_urls:
+        ref_images_b64 = _urls_to_base64_list(image_urls)
+
+    shot: dict = {
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "num_frames": frames,
+        "num_inference_steps": steps,
+        "height": height,
+        "width": width,
+        "fps": 24,
+        "fast": fast,
+        "background_style": background_style,
+    }
+    if ref_images_b64:
+        shot["reference_images"] = ref_images_b64
+
+    submit_url = f"{LTX_VIDEO_BASE_URL}/api/v1/generate/async"
+    try:
+        resp = requests.post(
+            submit_url,
+            json=shot,
+            timeout=(_CONNECT_TIMEOUT, 30),
+            verify=False,
+        )
+        resp.raise_for_status()
+        task_data = resp.json()
+        task_id = task_data.get("task_id")
+        if not task_id:
+            return f"❌ 提交成功但未返回 task_id: {task_data}"
+        return task_id
+    except Exception as e:
+        return f"❌ 异步提交失败：{e}"
+
+
+def get_ltx_task_status(task_id: str) -> dict:
+    """
+    查询任务状态。如果完成且是单分镜，则直接下载 mp4 并上传 R2，返回 final url。
+    """
+    if not LTX_VIDEO_BASE_URL:
+        return {"status": "failed", "error": "LTX_VIDEO_BASE_URL 未配置"}
+
+    status_url = f"{LTX_VIDEO_BASE_URL}/api/v1/tasks/{task_id}"
+    try:
+        resp = requests.get(status_url, timeout=10, verify=False)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+    # 单分镜视频完成时的处理（从 /download 下载 mp4 并传到 R2）
+    if data.get("status") == "done" and "total" not in data:  # 'total' is usually in storyboard task
+        download_url = f"{LTX_VIDEO_BASE_URL}/api/v1/tasks/{task_id}/download"
+        try:
+            dl_resp = requests.get(download_url, timeout=(_CONNECT_TIMEOUT, 60), verify=False, stream=True)
+            dl_resp.raise_for_status()
+            mp4_bytes = dl_resp.content
+            
+            record_id = f"videos/{uuid.uuid4().hex}"
+            video_url = r2.upload_bytes(
+                data=mp4_bytes,
+                record_id=record_id,
+                ext="mp4",
+                content_type="video/mp4",
+            )
+            data["video_url"] = video_url
+        except Exception as e:
+            data["status"] = "failed"
+            data["error"] = f"上传 R2 失败: {e}"
+
+    return data
+
 
 def generate_video_ltx(
     prompt: str,

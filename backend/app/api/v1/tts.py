@@ -30,8 +30,7 @@ router = APIRouter(prefix="/api/v1/tts", tags=["tts"])
 # 配置
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Modal 部署后的 TTS 服务 URL，通过环境变量注入
-# 格式：https://<workspace>--omnivoice-tts-api.modal.run
+# Kokoro TTS 服务 URL（通过环境变量注入，兼容 Modal 或任意自托管部署）
 MODAL_TTS_URL = os.environ.get("MODAL_TTS_URL", "").rstrip("/")
 
 # TTS 相关的 LLM 配置复用 base_brain 的密钥
@@ -176,8 +175,7 @@ async def generate_tts(req: TTSGenerateRequest):
     if not MODAL_TTS_URL:
         raise HTTPException(
             status_code=503,
-            detail="TTS 服务未配置。请在 .env 中设置 MODAL_TTS_URL，"
-                   "并执行 `modal deploy modal_tts_service.py` 完成部署。",
+            detail="TTS 服务未配置。请在 .env 中设置 MODAL_TTS_URL 为 Kokoro TTS 服务地址。",
         )
 
     # ── 调用 Modal TTS 服务 ──
@@ -315,6 +313,7 @@ def _build_voice_response(wav_bytes: bytes, product_name: str, engine: str) -> T
 # 4. CosyVoice 2 TTS（情绪控制）
 # ─────────────────────────────────────────────────────────────────────────────
 
+# CosyVoice TTS 服务 URL
 MODAL_COSYVOICE_URL = os.environ.get("MODAL_COSYVOICE_URL", "").rstrip("/")
 
 COSYVOICE_EMOTIONS = [
@@ -353,8 +352,7 @@ async def generate_cosyvoice(req: CosyVoiceRequest):
     if not MODAL_COSYVOICE_URL:
         raise HTTPException(
             status_code=503,
-            detail="CosyVoice 服务未配置。请在 .env 中设置 MODAL_COSYVOICE_URL，"
-                   "并执行 `modal deploy modal_cosyvoice_service.py`。",
+            detail="CosyVoice 服务未配置。请在 .env 中设置 MODAL_COSYVOICE_URL 为服务地址。",
         )
     logger.info("🎭 CosyVoice: speaker=%s emotion=%s text_len=%d", req.speaker, req.emotion, len(req.text))
     try:
@@ -383,6 +381,7 @@ async def cosyvoice_emotions():
 # 5. EmotiVoice TTS（情绪控制）
 # ─────────────────────────────────────────────────────────────────────────────
 
+# EmotiVoice TTS 服务 URL
 MODAL_EMOTIVOICE_URL = os.environ.get("MODAL_EMOTIVOICE_URL", "").rstrip("/")
 
 EMOTIVOICE_EMOTIONS = [
@@ -424,8 +423,7 @@ async def generate_emotivoice(req: EmotiVoiceRequest):
     if not MODAL_EMOTIVOICE_URL:
         raise HTTPException(
             status_code=503,
-            detail="EmotiVoice 服务未配置。请在 .env 中设置 MODAL_EMOTIVOICE_URL，"
-                   "并执行 `modal deploy modal_emotivoice_service.py`。",
+            detail="EmotiVoice 服务未配置。请在 .env 中设置 MODAL_EMOTIVOICE_URL 为服务地址。",
         )
     logger.info("🎭 EmotiVoice: speaker=%s emotion=%s text_len=%d", req.speaker, req.emotion, len(req.text))
     try:

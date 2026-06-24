@@ -2,10 +2,13 @@ import asyncio
 import json
 import logging
 import threading
-from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+import time
+import uuid
+from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from app.api.core.services.video_engine import generate_video
+
 
 _log = logging.getLogger(__name__)
 
@@ -28,6 +31,53 @@ class VideoGenerationResponse(BaseModel):
 
 # 单个视频最长等待 5 分钟（Seedance 实际渲染约 30-90s）
 _VIDEO_TIMEOUT_S = 300
+
+class VideoTaskResponse(BaseModel):
+    task_id: str
+    status: str
+    progress: int = 0
+    video_url: Optional[str] = None
+    error: Optional[str] = None
+
+
+@router.post("/generate/async", response_model=VideoTaskResponse)
+async def create_video_async(body: VideoGenerationRequest):
+    """
+    异步提交视频生成任务，返回 task_id 用于轮询进度。
+    """
+    from app.api.core.services.ltx_video_engine import generate_video_ltx_async
+    try:
+        task_id_or_err = await asyncio.to_thread(
+            generate_video_ltx_async, 
+            body.prompt, 
+            body.image_urls or None,
+            fast=False
+        )
+        if task_id_or_err.startswith("❌"):
+            raise HTTPException(status_code=500, detail=task_id_or_err)
+        return VideoTaskResponse(task_id=task_id_or_err, status="pending")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/tasks/{task_id}", response_model=VideoTaskResponse)
+async def get_task_status(task_id: str):
+    """
+    轮询视频生成任务进度。如果 status == "done"，则会包含 video_url。
+    """
+    from app.api.core.services.ltx_video_engine import get_ltx_task_status
+    try:
+        status_data = await asyncio.to_thread(get_ltx_task_status, task_id)
+        return VideoTaskResponse(
+            task_id=task_id,
+            status=status_data.get("status", "unknown"),
+            progress=status_data.get("progress", 0),
+            video_url=status_data.get("video_url"),
+            error=status_data.get("error")
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
 
 @router.post("/generate", response_model=VideoGenerationResponse)
 async def create_video(body: VideoGenerationRequest, http_request: Request):
@@ -116,6 +166,13 @@ class StoryboardShot(BaseModel):
     logic: str
     scene_prompt: str
     video_type: str = "text-to-video"   # "text-to-video" | "image-to-video"
+    # 商品类目（可选，单分镜级别可覆盖全局 category）
+    category: Optional[str] = Field(
+        default=None,
+        description="商品类目，传入后视频服务自动注入该类目专业镜头语言。"
+                    "通用：beauty/fashion/food/3c/home/baby/sports/jewelry；"
+                    "业务专用：pet_supplement（宠物营养保健）/moji_tea（张家界莓茶）",
+    )
 
 class ScriptToVideoRequest(BaseModel):
     global_style_prompt: str = ""
@@ -123,11 +180,17 @@ class ScriptToVideoRequest(BaseModel):
     storyboard: List[StoryboardShot]
     # 产品实拍图列表（image-to-video 分镜会将所有图传给 RunPod，CLIP 自动选最匹配的）
     image_urls: List[str] = Field(default_factory=list)
+    # 全局商品类目（可选，单个分镜未设置 category 时回退使用此值）
+    category: Optional[str] = Field(
+        default=None,
+        description="全局商品类目，所有未单独指定 category 的分镜默认使用此值。",
+    )
     # 渲染参数
     num_frames: int = Field(default=97, description="总帧数，推荐 97（约4s@24fps）")
     steps: int = Field(default=50, description="去噪步数，正式出片推荐 50，预览推荐 20")
     fast: bool = Field(default=False, description="False=Wan2.2 正式出片，True=LTX-Video 快速预览")
     background_style: str = Field(default="gradient", description="商品背景样式：gradient/white/warm/dark")
+
 
 class ShotResult(BaseModel):
     index: int
@@ -206,44 +269,30 @@ async def generate_from_script(body: ScriptToVideoRequest):
             "fast": body.fast,
             "background_style": body.background_style,
         }
+        # 商品类目：分镜级优先，未设置则回退到全局 category
+        shot_category = shot.category or body.category
+        if shot_category:
+            s["category"] = shot_category
         # image-to-video 分镜：传入所有参考图，CLIP 自动选最匹配的
         if shot.video_type == "image-to-video" and ref_images_b64:
             s["reference_images"] = ref_images_b64
         shots.append(s)
 
-    # 单次批量调用 — 优先 RunPod，RunPod 未配置时回退到 Modal
-    from app.api.core.services.ltx_video_engine import (
-        LTX_VIDEO_BASE_URL,
-        MODAL_VIDEO_URL,
-    )
-    use_modal = (not LTX_VIDEO_BASE_URL) and bool(MODAL_VIDEO_URL)
+
+    from app.api.core.services.ltx_video_engine import LTX_VIDEO_BASE_URL
 
     import logging as _logging
     _log = _logging.getLogger(__name__)
-    _log.info(
-        "[generate_from_script] use_modal=%s, LTX_VIDEO_BASE_URL=%r, MODAL_VIDEO_URL=%r, shots=%d",
-        use_modal, LTX_VIDEO_BASE_URL, MODAL_VIDEO_URL, len(shots),
-    )
 
-    # Use async endpoint when payload is large (reference images inflate JSON to tens of MB)
-    # Async: POST /storyboard/async → poll /tasks/{id} → GET /tasks/{id}/download
+    # 有参考图时使用异步接口（payload 较大），否则使用同步接口
     has_ref_images = any(s.get("reference_images") for s in shots)
-    use_async = has_ref_images and not use_modal  # Modal doesn't support async yet
-
     _log.info(
-        "[generate_from_script] has_ref_images=%s, use_async=%s",
-        has_ref_images, use_async,
+        "[generate_from_script] LTX_VIDEO_BASE_URL=%r, has_ref_images=%s, shots=%d",
+        LTX_VIDEO_BASE_URL, has_ref_images, len(shots),
     )
 
     try:
-        if use_modal:
-            url_list = await asyncio.wait_for(
-                asyncio.to_thread(
-                    _generate_storyboard_modal, shots, num_frames, body.steps
-                ),
-                timeout=_STORYBOARD_TIMEOUT_S,
-            )
-        elif use_async:
+        if has_ref_images:
             from app.api.core.services.ltx_video_engine import generate_storyboard_ltx_async
             url_list = await asyncio.wait_for(
                 asyncio.to_thread(generate_storyboard_ltx_async, shots, num_frames, body.steps),
@@ -285,82 +334,6 @@ async def generate_from_script(body: ScriptToVideoRequest):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Modal 视频服务调用（当 RunPod 未配置时使用）
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _generate_storyboard_modal(
-    shots: List[dict],
-    num_frames: int,
-    steps: int,
-) -> List[str]:
-    """
-    将分镜列表提交给 Modal 视频服务（MODAL_VIDEO_URL/generate/storyboard），
-    解析返回的 ZIP，逐帧上传 R2，返回 URL 列表。
-    """
-    import io
-    import uuid
-    import zipfile
-    import logging
-    import requests
-    from app.api.core.services.ltx_video_engine import MODAL_VIDEO_URL
-    from app.api.core.services.storage import r2
-
-    _log = logging.getLogger(__name__)
-
-    if not MODAL_VIDEO_URL:
-        return ["❌ MODAL_VIDEO_URL 未配置"] * len(shots)
-
-    storyboard_url = f"{MODAL_VIDEO_URL}/generate/storyboard"
-    _log.info("[video.py Modal] POST %s (%d shots)", storyboard_url, len(shots))
-
-    try:
-        resp = requests.post(
-            storyboard_url,
-            json={"shots": shots},
-            timeout=(15, 3600),
-        )
-        resp.raise_for_status()
-    except requests.exceptions.ConnectionError as e:
-        err = f"❌ 无法连接 Modal 视频服务（{MODAL_VIDEO_URL}）：{e}"
-        return [err] * len(shots)
-    except requests.exceptions.Timeout:
-        return ["❌ Modal 视频服务推理超时"] * len(shots)
-    except Exception as e:
-        return [f"❌ Modal 请求异常：{e}"] * len(shots)
-
-    content_type = resp.headers.get("Content-Type", "")
-    if "zip" not in content_type and "octet-stream" not in content_type:
-        return [f"❌ Modal 响应 Content-Type 异常（{content_type}）"] * len(shots)
-
-    results: List[str] = ["❌ 未生成"] * len(shots)
-    try:
-        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-            for i in range(len(shots)):
-                mp4_name = f"shot_{i + 1:03d}.mp4"
-                if mp4_name not in zf.namelist():
-                    results[i] = f"❌ 分镜 {i + 1} 未生成"
-                    continue
-                mp4_bytes = zf.read(mp4_name)
-                if not mp4_bytes:
-                    results[i] = f"❌ 分镜 {i + 1} 空视频"
-                    continue
-                record_id = f"videos/{uuid.uuid4().hex}"
-                try:
-                    url = r2.upload_bytes(
-                        data=mp4_bytes, record_id=record_id,
-                        ext="mp4", content_type="video/mp4",
-                    )
-                    results[i] = url
-                    _log.info("[video.py Modal] 分镜 %d 上传 R2 成功: %s", i + 1, url)
-                except Exception as e:
-                    results[i] = f"❌ 分镜 {i + 1} 上传 R2 失败：{e}"
-    except zipfile.BadZipFile as e:
-        return [f"❌ Modal 返回的 ZIP 文件损坏：{e}"] * len(shots)
-
-    return results
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # WebSocket：实时流式视频生成（解决 HTTP 60 分钟超时问题）
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -398,11 +371,8 @@ async def ws_generate_from_script(websocket: WebSocket):
         _RATIO_SIZES,
         _nearest_4n_plus_1,
         _nearest_8n_plus_1,
-        LTX_VIDEO_BASE_URL,
-        MODAL_VIDEO_URL,
         generate_storyboard_ltx_async,
     )
-    from app.api.core.services.storage import r2
 
     ref_images_b64: List[str] = []
     if body.image_urls:
@@ -417,8 +387,6 @@ async def ws_generate_from_script(websocket: WebSocket):
     total = len(body.storyboard)
 
     await websocket.send_text(json.dumps({"type": "init", "total": total}))
-
-    use_modal = (not LTX_VIDEO_BASE_URL) and bool(MODAL_VIDEO_URL)
 
     # ── 逐条生成 ────────────────────────────────────────────────────────────
     success_count = 0
@@ -453,24 +421,21 @@ async def ws_generate_from_script(websocket: WebSocket):
             "fast": body.fast,
             "background_style": body.background_style,
         }
+        # 商品类目：分镜级优先，未设置则回退到全局 category
+        shot_category = shot.category or body.category
+        if shot_category:
+            shot_dict["category"] = shot_category
         if shot.video_type == "image-to-video" and ref_images_b64:
             shot_dict["reference_images"] = ref_images_b64
 
+
         try:
             # Each shot has its own generous timeout (15 min for Wan2.2 high-quality)
-            if use_modal:
-                url_list = await asyncio.wait_for(
-                    asyncio.to_thread(_generate_storyboard_modal, [shot_dict], num_frames, body.steps),
-                    timeout=900,
-                )
-                url = url_list[0]
-            else:
-                # RunPod: use the async poll approach for each shot
-                url_list = await asyncio.wait_for(
-                    asyncio.to_thread(generate_storyboard_ltx_async, [shot_dict], num_frames, body.steps),
-                    timeout=900,
-                )
-                url = url_list[0]
+            url_list = await asyncio.wait_for(
+                asyncio.to_thread(generate_storyboard_ltx_async, [shot_dict], num_frames, body.steps),
+                timeout=900,
+            )
+            url = url_list[0]
 
             if url.startswith("❌"):
                 failed_count += 1
@@ -525,25 +490,11 @@ async def ws_generate_from_script(websocket: WebSocket):
 
 @router.get("/ltx-health")
 async def ltx_health():
-    """检查 RunPod LTX/Wan2.2 / Modal 视频服务是否就绪。"""
-    from app.api.core.services.ltx_video_engine import (
-        LTX_VIDEO_BASE_URL, MODAL_VIDEO_URL, check_service_ready,
-    )
+    """检查视频生成服务（LTX_VIDEO_BASE_URL）是否就绪。"""
+    from app.api.core.services.ltx_video_engine import LTX_VIDEO_BASE_URL, check_service_ready
 
-    # RunPod 在线时优先用它
-    if LTX_VIDEO_BASE_URL:
-        ready = await asyncio.to_thread(check_service_ready)
-        return {"ready": ready, "backend": "runpod"}
+    if not LTX_VIDEO_BASE_URL:
+        return {"ready": False, "backend": "none"}
 
-    # 回退到 Modal：调用 /health 确认
-    if MODAL_VIDEO_URL:
-        try:
-            import requests
-            resp = requests.get(f"{MODAL_VIDEO_URL}/health", timeout=10)
-            if resp.status_code == 200:
-                return {"ready": True, "backend": "modal"}
-        except Exception:
-            pass
-        return {"ready": False, "backend": "modal"}
-
-    return {"ready": False, "backend": "none"}
+    ready = await asyncio.to_thread(check_service_ready)
+    return {"ready": ready, "backend": "video_service"}
