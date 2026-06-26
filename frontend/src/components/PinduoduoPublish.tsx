@@ -1,7 +1,8 @@
 // frontend/src/components/PinduoduoPublish.tsx
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8000';
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || '';
 // Version: 4.4 (Fixed Silent Failure in Title Generation)
 import React, { useState, useEffect, useRef } from 'react';
+import PlanManager from './PlanManager';
 import { Form, Input, Button, Select, message, Divider, Modal, Spin, Upload, Image, Cascader } from 'antd';
 import { 
   RobotOutlined, PictureOutlined, ThunderboltOutlined, 
@@ -83,6 +84,7 @@ const TEXT_MODELS = [
   const [buyerShowTexts, setBuyerShowTexts] = useState<string[]>(Array(5).fill(''));
   const [buyerShowCount, setBuyerShowCount] = useState<number>(5);
   const [buyerShowR2Images, setBuyerShowR2Images] = useState<string[]>([]);
+  const [detailR2Images, setDetailR2Images] = useState<string[]>([]);
 
   const [runningOneClick, setRunningOneClick] = useState(false);
   const [finalAdUrl, setFinalAdUrl] = useState<string | null>(null);
@@ -119,7 +121,7 @@ const TEXT_MODELS = [
   const [videoRenderProgress, setVideoRenderProgress] = useState("");
   const [videoClips, setVideoClips] = useState<string[]>(Array(12).fill(''));
   const [generatingScript, setGeneratingScript] = useState(false);
-  const [script, setScript] = useState<{global_style_prompt: string; ratio?: string; storyboard: {logic: string; scene_prompt: string; video_type?: string}[]} | null>(null);
+  const [script, setScript] = useState<{global_style_prompt: string; ratio?: string; storyboard: {time: string; shot_and_camera: string; logic: string; scene_prompt: string; audio: string; transition: string; video_type?: string; reference_image?: string}[]} | null>(null);
   const [generatingLtx, setGeneratingLtx] = useState(false);
   const [ltxProgress, setLtxProgress] = useState("");
   const [ltxClips, setLtxClips] = useState<string[]>(Array(12).fill(''));
@@ -129,7 +131,7 @@ const TEXT_MODELS = [
   const [explainVideoProgress, setExplainVideoProgress] = useState("");
   const [explainVideoClips, setExplainVideoClips] = useState<string[]>(Array(12).fill(''));
   const [generatingExplainScript, setGeneratingExplainScript] = useState(false);
-  const [explainScript, setExplainScript] = useState<{global_style_prompt: string; ratio?: string; storyboard: {logic: string; scene_prompt: string; video_type?: string}[]} | null>(null);
+  const [explainScript, setExplainScript] = useState<{global_style_prompt: string; ratio?: string; storyboard: {time: string; shot_and_camera: string; logic: string; scene_prompt: string; audio: string; transition: string; video_type?: string}[]} | null>(null);
   const [generatingExplainLtx, setGeneratingExplainLtx] = useState(false);
   const [explainLtxProgress, setExplainLtxProgress] = useState("");
   const [explainLtxClips, setExplainLtxClips] = useState<string[]>(Array(12).fill(''));
@@ -139,10 +141,21 @@ const TEXT_MODELS = [
   const [detailVideoProgress, setDetailVideoProgress] = useState("");
   const [detailVideoClips, setDetailVideoClips] = useState<string[]>(Array(12).fill(''));
   const [generatingDetailScript, setGeneratingDetailScript] = useState(false);
-  const [detailScript, setDetailScript] = useState<{global_style_prompt: string; ratio?: string; storyboard: {logic: string; scene_prompt: string; video_type?: string}[]} | null>(null);
+  const [detailScript, setDetailScript] = useState<{global_style_prompt: string; ratio?: string; storyboard: {time: string; shot_and_camera: string; logic: string; scene_prompt: string; audio: string; transition: string; video_type?: string}[]} | null>(null);
   const [generatingDetailLtx, setGeneratingDetailLtx] = useState(false);
   const [detailLtxProgress, setDetailLtxProgress] = useState("");
   const [detailLtxClips, setDetailLtxClips] = useState<string[]>(Array(12).fill(''));
+
+  // ── 视频素材库 (Pexels / Pixabay / Unsplash) ──
+  const PEXELS_API_KEY = 'hneKcoWsAuZdTUM3fFNw5F8mizHzimcJQkqZqJnvZjJV2ZLD02wt5jOt';
+  const PIXABAY_API_KEY = '7268232-a1a9b779595d77cac397b7ed8';
+  const UNSPLASH_API_KEY = 'yzYxinqB7LV0gjwocEvetMqQSKk4gCbOdYqBaa5cQuc';
+  const [searchingStock, setSearchingStock] = useState(false);
+  const [stockQuery, setStockQuery] = useState('');
+  const [stockTab, setStockTab] = useState<'pexels' | 'pixabay' | 'unsplash'>('pexels');
+  const [pexelsResults, setPexelsResults] = useState<any[]>([]);
+  const [pixabayResults, setPixabayResults] = useState<any[]>([]);
+  const [unsplashResults, setUnsplashResults] = useState<any[]>([]);
 
   // ── LTX/Wan2.2 渲染模式 ──
   // fast=false → Wan2.2 正式出片（高质量，每条~60s）
@@ -158,6 +171,17 @@ const TEXT_MODELS = [
   // 🎙️ 口播文案 & TTS 状态
   const [extractingScript, setExtractingScript] = useState(false);
   const [broadcastScript, setBroadcastScript] = useState('');
+
+  // LivePortrait 数字人
+  const LIVEPORTRAIT_ENDPOINT = process.env.NEXT_PUBLIC_LIVEPORTRAIT_URL || 'https://tuolin2011--liveportrait-api-endpoint.modal.run';
+  const [livePortraitSourceUrl, setLivePortraitSourceUrl] = useState<string>('');
+  const [livePortraitSourceFile, setLivePortraitSourceFile] = useState<File | null>(null);
+  const [generatingLivePortrait, setGeneratingLivePortrait] = useState(false);
+  const [livePortraitProgress, setLivePortraitProgress] = useState('');
+  const [livePortraitVideoUrl, setLivePortraitVideoUrl] = useState('');
+  const [livePortraitAudioMode, setLivePortraitAudioMode] = useState<'tts' | 'custom'>('tts');
+  const [livePortraitCustomAudioUrl, setLivePortraitCustomAudioUrl] = useState('');
+  const [livePortraitCustomAudioFile, setLivePortraitCustomAudioFile] = useState<File | null>(null);
 
   // VoxCPM2 TTS
   const VOXCPM2_ENDPOINT = process.env.NEXT_PUBLIC_VOXCPM2_URL || 'https://tuolin2011--voxcpm2-api-factory-voxcpm2service-api-endpoint.modal.run';
@@ -206,7 +230,7 @@ const TEXT_MODELS = [
 
   const [selectedR2Images, setSelectedR2Images] = useState<string[]>([]); 
   const [isR2ModalVisible, setIsR2ModalVisible] = useState(false);
-  const [r2ModalTarget, setR2ModalTarget] = useState<'global' | 'buyerShow'>('global');
+  const [r2ModalTarget, setR2ModalTarget] = useState<'global' | 'buyerShow' | 'detail'>('global');
   const [r2Gallery, setR2Gallery] = useState<string[]>([]);
   const [fetchingR2, setFetchingR2] = useState(false);
   const [uploadingR2, setUploadingR2] = useState(false); 
@@ -239,7 +263,7 @@ const TEXT_MODELS = [
     }
   };
 
-  const openR2Modal = (target: 'global' | 'buyerShow' = 'global') => {
+  const openR2Modal = (target: 'global' | 'buyerShow' | 'detail' = 'global') => {
     setR2ModalTarget(target);
     setIsR2ModalVisible(true);
     if (r2Gallery.length === 0) fetchR2Images(1, false);
@@ -249,19 +273,20 @@ const TEXT_MODELS = [
     if (r2ModalTarget === 'global') {
       setSelectedR2Images(prev => {
         if (prev.includes(url)) return prev.filter(u => u !== url);
-        if (prev.length >= 3) {
-          message.warning('最多只能选择3张原图！');
-          return prev;
-        }
         return [...prev, url];
       });
-    } else {
+    } else if (r2ModalTarget === 'buyerShow') {
       setBuyerShowR2Images(prev => {
         if (prev.includes(url)) return prev.filter(u => u !== url);
         if (prev.length >= 5) {
           message.warning('最多只能选择5张买家秀原图！');
           return prev;
         }
+        return [...prev, url];
+      });
+    } else if (r2ModalTarget === 'detail') {
+      setDetailR2Images(prev => {
+        if (prev.includes(url)) return prev.filter(u => u !== url);
         return [...prev, url];
       });
     }
@@ -280,9 +305,11 @@ const TEXT_MODELS = [
         message.success('✅ 成功推送到云端对象存储！');
         onSuccess(data, file);
         if (r2ModalTarget === 'global') {
-          setSelectedR2Images(prev => [data.data.url, ...prev].slice(0, 3));
-        } else {
+          setSelectedR2Images(prev => [...prev, data.data.url]);
+        } else if (r2ModalTarget === 'buyerShow') {
           setBuyerShowR2Images(prev => [data.data.url, ...prev].slice(0, 5));
+        } else if (r2ModalTarget === 'detail') {
+          setDetailR2Images(prev => [...prev, data.data.url]);
         }
         fetchR2Images(1, false);
       } else {
@@ -578,7 +605,7 @@ const TEXT_MODELS = [
   };
 
   // ─── 生成分镜脚本（不渲染视频）────────────────────────────────────────────
-  type ScriptData = { global_style_prompt: string; ratio?: string; storyboard: { logic: string; scene_prompt: string; video_type?: string }[] };
+  type ScriptData = { global_style_prompt: string; ratio?: string; storyboard: { time: string; shot_and_camera: string; logic: string; scene_prompt: string; audio: string; transition: string; video_type?: string }[] };
 
   const _generateScriptOnly = async () => {
     const pmReport = form.getFieldValue('pm_report');
@@ -839,7 +866,7 @@ const TEXT_MODELS = [
               signal: abortControllers.current['detail']?.signal,
               body: JSON.stringify({ 
                 prompt: `${parsedData.global_style_prompt}, ${scene.scene_prompt}`, 
-                image_urls: selectedR2Images, 
+                image_urls: detailR2Images.length > 0 ? detailR2Images : selectedR2Images, 
                 model: targetModelId,
                 previous_image_url: i > 0 ? updatedImages[i - 1] : "",
                 platform: 'pinduoduo',
@@ -1364,15 +1391,11 @@ const TEXT_MODELS = [
           
           // Update clips with R2 URLs as they become available
           if (statusData.r2_urls) {
-            setClips((prevClips: string[]) => {
-              const newClips = [...prevClips];
-              statusData.r2_urls.forEach((url: string | null, i: number) => {
-                if (url && !newClips[i]) {
-                  newClips[i] = url;
-                }
-              });
-              return newClips;
+            const newClips = Array(total).fill('');
+            statusData.r2_urls.forEach((url: string | null, i: number) => {
+              if (url) newClips[i] = url;
             });
+            setClips(newClips);
           }
           
           if (statusData.status === 'done') {
@@ -1550,6 +1573,127 @@ const TEXT_MODELS = [
   };
 
 
+  // 🐾 LivePortrait 数字人生成
+  const handleGenerateLivePortrait = async () => {
+    if (!livePortraitSourceUrl && !livePortraitSourceFile) {
+      return message.warning('请先上传或输入数字人参考图片/视频！');
+    }
+    // 确定音频来源
+    const audioUrl = livePortraitAudioMode === 'tts' ? voxCpm2Url : livePortraitCustomAudioUrl;
+    if (!audioUrl) {
+      return message.warning(
+        livePortraitAudioMode === 'tts'
+          ? '请先在上方生成 VoxCPM2 口播语音！'
+          : '请先上传自定义音频！'
+      );
+    }
+
+    setGeneratingLivePortrait(true);
+    setLivePortraitProgress('正在提交 LivePortrait 渲染任务...');
+    setLivePortraitVideoUrl('');
+
+    try {
+      const formData = new FormData();
+      // 音频（blob URL → fetch → blob）
+      const audioRes = await fetch(audioUrl);
+      const audioBlob = await audioRes.blob();
+      formData.append('audio', audioBlob, 'voice.wav');
+
+      // 参考图/视频
+      if (livePortraitSourceFile) {
+        formData.append('source', livePortraitSourceFile);
+      } else if (livePortraitSourceUrl) {
+        const srcRes = await fetch(`${API_BASE}/api/v1/proxy/download?url=${encodeURIComponent(livePortraitSourceUrl)}`);
+        const srcBlob = await srcRes.blob();
+        const ext = livePortraitSourceUrl.split('.').pop()?.toLowerCase() || 'jpg';
+        formData.append('source', srcBlob, `source.${ext}`);
+      }
+
+      setLivePortraitProgress('LivePortrait 渲染中，GPU 加速约 30~120 秒...');
+
+      const res = await fetch(`${LIVEPORTRAIT_ENDPOINT}/generate`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!res.ok) throw new Error(`LivePortrait 服务异常 (HTTP ${res.status})`);
+
+      // 判断返回类型：JSON（含 task_id 轮询）或直接 blob
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.video_url) {
+          setLivePortraitVideoUrl(data.video_url);
+          message.success('🐾 数字人视频生成完成！');
+        } else if (data.task_id) {
+          // 异步轮询
+          const taskId = data.task_id;
+          const poll = setInterval(async () => {
+            try {
+              const pollRes = await fetch(`${LIVEPORTRAIT_ENDPOINT}/tasks/${taskId}`);
+              if (!pollRes.ok) return;
+              const status = await pollRes.json();
+              setLivePortraitProgress(`渲染中... ${status.progress ?? ''}%`);
+              if (status.status === 'done' && status.video_url) {
+                clearInterval(poll);
+                setLivePortraitVideoUrl(status.video_url);
+                setGeneratingLivePortrait(false);
+                setLivePortraitProgress('');
+                message.success('🐾 数字人视频生成完成！');
+              } else if (status.status === 'failed') {
+                clearInterval(poll);
+                throw new Error(status.error || '渲染失败');
+              }
+            } catch (e: any) {
+              clearInterval(poll);
+              setGeneratingLivePortrait(false);
+              setLivePortraitProgress('');
+              message.error(`LivePortrait 失败: ${e.message}`);
+            }
+          }, 5000);
+          return; // 轮询模式下不在此处 finally 清理
+        }
+      } else {
+        // 直接返回视频 blob
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        setLivePortraitVideoUrl(url);
+        message.success('🐾 数字人视频生成完成！');
+      }
+    } catch (err: any) {
+      message.error(`LivePortrait 生成失败: ${err.message}`);
+    } finally {
+      setGeneratingLivePortrait(false);
+      setLivePortraitProgress('');
+    }
+  };
+
+  const handleSearchStock = async (q: string) => {
+    const query = (q || stockQuery).trim();
+    if (!query) return message.warning('请输入搜索关键词！');
+    setStockQuery(query);
+    setSearchingStock(true);
+    setPexelsResults([]); setPixabayResults([]); setUnsplashResults([]);
+    try {
+      const [pexRes, pixRes, unsRes] = await Promise.allSettled([
+        fetch(`https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=12&orientation=landscape`, { headers: { Authorization: PEXELS_API_KEY } }),
+        fetch(`https://pixabay.com/api/videos/?key=${PIXABAY_API_KEY}&q=${encodeURIComponent(query)}&per_page=12&video_type=film`),
+        fetch(`https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=12&client_id=${UNSPLASH_API_KEY}`),
+      ]);
+      if (pexRes.status === 'fulfilled' && pexRes.value.ok) { const d = await pexRes.value.json(); setPexelsResults(d.videos || []); }
+      if (pixRes.status === 'fulfilled' && pixRes.value.ok) { const d = await pixRes.value.json(); setPixabayResults(d.hits || []); }
+      if (unsRes.status === 'fulfilled' && unsRes.value.ok) { const d = await unsRes.value.json(); setUnsplashResults(d.results || []); }
+      message.success('素材搜索完成！');
+    } catch (e: any) { message.error(`搜索失败: ${e.message}`); }
+    finally { setSearchingStock(false); }
+  };
+
+  const handleSearchFromScriptData = (scriptData: { storyboard: { scene_prompt: string }[] } | null) => {
+    if (!scriptData) return message.warning('请先生成分镜脚本！');
+    const kw = scriptData.storyboard.slice(0, 4).map(sh => sh.scene_prompt.split(',')[0].trim()).join(' ');
+    handleSearchStock(kw);
+  };
+
   const handleDownloadSkuImages = async () => {
     const validImages = skuImages.filter(url => url);
     if (validImages.length === 0) return message.warning('没有可下载的SKU图！');
@@ -1593,38 +1737,6 @@ const TEXT_MODELS = [
               </div>
               
               <div className="flex gap-8 mb-5">
-                <div className="w-[260px]">
-                  <div className="mb-3 text-sm text-blue-900 font-medium">
-                    <span className="text-red-500 mr-1">*</span>多视角原图 ({selectedR2Images.length}/3)
-                  </div>
-                  <div className="flex gap-2 flex-wrap">
-                    {selectedR2Images.map((img, idx) => (
-                      <div key={idx} className="relative w-[70px] h-[70px] border border-gray-200 rounded-lg overflow-hidden group shadow-sm">
-                        <img src={img} className="w-full h-full object-cover" />
-                        <div 
-                          className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 flex items-center justify-center text-xs cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleR2ImageSelection(img);
-                          }}
-                          title="删除"
-                        >
-                          ×
-                        </div>
-                      </div>
-                    ))}
-                    {selectedR2Images.length < 3 && (
-                      <div 
-                        onClick={() => openR2Modal('global')}
-                        className="w-[70px] h-[70px] border-2 border-dashed border-blue-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 bg-white text-blue-500 transition-colors"
-                      >
-                        <CloudOutlined className="text-xl mb-1" />
-                        <span className="text-[10px] font-bold">选择图片</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
                 <div className="flex-1 flex flex-col gap-4">
                   <Form.Item name="target_sku" label={<span className="text-sm font-bold text-blue-900">核心产品 (SKU)</span>} labelCol={{span: 24}} wrapperCol={{span: 24}} className="mb-0">
                     <Cascader 
@@ -1690,6 +1802,15 @@ const TEXT_MODELS = [
                     placeholder="点击右上角，系统将结合 24 列 Excel 档案，为你深度策划出 10 张主图与 15 张详情页的核心卖点与画面构图脚本..." 
                  />
                </Form.Item>
+
+               <div className="mb-6">
+                 <PlanManager
+                   platform="pinduoduo"
+                   skuName={selectedSkuName}
+                   pmReport={form.getFieldValue('pm_report') || ''}
+                   onLoad={(report) => form.setFieldsValue({ pm_report: report })}
+                 />
+               </div>
 
                <Form.Item label={<span className="font-bold text-gray-700">拼多多高转化标题</span>} className="mb-0">
                   <div className="flex gap-3 flex-wrap">
@@ -1843,6 +1964,127 @@ const TEXT_MODELS = [
                   </div>
                 )}
               </div>
+            </div>
+
+            {/* 🐾 数字人（宠物）生成区 — LivePortrait */}
+            <div className="mb-8 p-5 border border-pink-200 rounded-lg bg-gradient-to-r from-pink-50 to-rose-50">
+              <div className="flex justify-between items-center mb-4">
+                <span className="font-bold text-pink-800 flex items-center gap-2">
+                  <span className="text-xl">🐾</span>
+                  第三步：数字人（宠物）视频生成
+                  <span className="text-[10px] bg-pink-100 text-pink-600 px-2 py-0.5 rounded-full">LivePortrait · Modal GPU</span>
+                </span>
+              </div>
+              <div className="text-xs text-pink-600 bg-pink-50 border border-pink-100 rounded p-2 mb-4">
+                上传人物/宠物参考图片或视频，结合上方生成的口播语音，自动驱动嘴型与表情，生成数字人口播视频。
+              </div>
+
+              {/* 音频来源选择 */}
+              <div className="mb-4">
+                <div className="text-xs font-medium text-gray-600 mb-2">驱动音频来源：</div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setLivePortraitAudioMode('tts')}
+                    className={`text-xs px-3 py-1.5 rounded border font-bold cursor-pointer transition-all ${livePortraitAudioMode === 'tts' ? 'bg-pink-600 text-white border-pink-600' : 'bg-white text-gray-500 border-gray-300 hover:border-pink-400'}`}
+                  >🎙 使用上方 VoxCPM2 语音{voxCpm2Url ? ' ✅' : ' (未生成)'}</button>
+                  <button
+                    onClick={() => setLivePortraitAudioMode('custom')}
+                    className={`text-xs px-3 py-1.5 rounded border font-bold cursor-pointer transition-all ${livePortraitAudioMode === 'custom' ? 'bg-pink-600 text-white border-pink-600' : 'bg-white text-gray-500 border-gray-300 hover:border-pink-400'}`}
+                  >📁 上传自定义音频</button>
+                </div>
+                {livePortraitAudioMode === 'custom' && (
+                  <div className="mt-2">
+                    <Upload
+                      accept="audio/*"
+                      showUploadList={false}
+                      beforeUpload={(file) => {
+                        setLivePortraitCustomAudioFile(file);
+                        setLivePortraitCustomAudioUrl(URL.createObjectURL(file));
+                        return false;
+                      }}
+                    >
+                      <Button size="small" icon={<UploadOutlined />} className="text-pink-600 border-pink-300">
+                        {livePortraitCustomAudioFile ? `已选：${livePortraitCustomAudioFile.name}` : '选择音频文件'}
+                      </Button>
+                    </Upload>
+                    {livePortraitCustomAudioUrl && (
+                      <audio src={livePortraitCustomAudioUrl} controls className="mt-2 w-full" style={{height:'32px'}} />
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* 参考图/视频上传 */}
+              <div className="mb-4">
+                <div className="text-xs font-medium text-gray-600 mb-2">数字人参考图片 / 视频：</div>
+                <div className="flex gap-3 items-start">
+                  <Upload
+                    accept="image/*,video/*"
+                    showUploadList={false}
+                    beforeUpload={(file) => {
+                      setLivePortraitSourceFile(file);
+                      setLivePortraitSourceUrl(URL.createObjectURL(file));
+                      return false;
+                    }}
+                  >
+                    <div className="w-24 h-24 border-2 border-dashed border-pink-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-pink-500 bg-white text-pink-400 transition-colors">
+                      <UploadOutlined className="text-xl mb-1" />
+                      <span className="text-[10px] font-bold text-center">上传参考图/视频</span>
+                    </div>
+                  </Upload>
+                  {livePortraitSourceUrl && (
+                    <div className="relative w-24 h-24 border border-pink-200 rounded-lg overflow-hidden shadow-sm group">
+                      {livePortraitSourceFile?.type.startsWith('video') ? (
+                        <video src={livePortraitSourceUrl} className="w-full h-full object-cover" />
+                      ) : (
+                        <img src={livePortraitSourceUrl} className="w-full h-full object-cover" />
+                      )}
+                      <div
+                        className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 flex items-center justify-center text-xs cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
+                        onClick={() => { setLivePortraitSourceUrl(''); setLivePortraitSourceFile(null); }}
+                      >×</div>
+                    </div>
+                  )}
+                  <div className="flex-1 text-[11px] text-gray-400 self-center">
+                    支持 JPG/PNG 人物或宠物图片，或 MP4/MOV 短视频。<br/>
+                    建议使用正面清晰的面部图，效果更佳。
+                  </div>
+                </div>
+              </div>
+
+              {/* 生成按钮 */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <Button
+                  type="primary"
+                  icon={generatingLivePortrait ? <LoadingOutlined /> : <VideoCameraOutlined />}
+                  onClick={handleGenerateLivePortrait}
+                  loading={generatingLivePortrait}
+                  disabled={(!livePortraitSourceUrl && !livePortraitSourceFile) || (livePortraitAudioMode === 'tts' ? !voxCpm2Url : !livePortraitCustomAudioUrl)}
+                  className="bg-pink-600 border-pink-600 font-bold"
+                >
+                  生成数字人视频
+                </Button>
+                {generatingLivePortrait && (
+                  <span className="text-pink-600 font-bold text-xs flex items-center gap-1">
+                    <Spin size="small" />{livePortraitProgress}
+                  </span>
+                )}
+                {livePortraitVideoUrl && !generatingLivePortrait && (
+                  <Button size="small" icon={<DownloadOutlined />}
+                    onClick={() => { const a = document.createElement('a'); a.href = livePortraitVideoUrl; a.download = 'liveportrait_avatar.mp4'; a.click(); }}
+                    className="text-pink-700 border-pink-300 bg-pink-50 font-bold">
+                    下载视频
+                  </Button>
+                )}
+              </div>
+
+              {/* 结果预览 */}
+              {livePortraitVideoUrl && (
+                <div className="mt-4 p-3 bg-white rounded-lg border border-pink-200">
+                  <div className="text-xs font-bold text-pink-700 mb-2">🎬 数字人视频预览：</div>
+                  <video src={livePortraitVideoUrl} controls className="w-full max-h-80 rounded-lg" />
+                </div>
+              )}
             </div>
 
             <Form.Item label={<span className="font-bold text-gray-700 block">主图</span>} className="mb-8">
@@ -2003,37 +2245,45 @@ const TEXT_MODELS = [
                     <Spin size="small" /><span>AI 正在构思分镜脚本，请稍候...</span>
                   </div>
                 )}
-                {!generatingScript && script && (
-                  <div className="border border-indigo-200 rounded-lg overflow-hidden bg-white shadow-sm">
-                    <div className="bg-gradient-to-r from-indigo-600 to-purple-600 px-4 py-2 flex items-center justify-between">
-                      <span className="text-white font-bold text-sm">📋 分镜脚本（{script.storyboard.length} 个分镜）</span>
-                      <Button size="small" icon={<VideoCameraOutlined />} onClick={_generateLtxFromScript}
-                        loading={generatingLtx} disabled={generatingLtx}
-                        className="bg-white/20 text-white border-white/40 font-bold text-xs">
-                        {generatingLtx ? ltxProgress || 'LTX 渲染中...' : '▶ LTX 生成视频（RunPod）'}
-                      </Button>
-                    </div>
-                    <div className="p-3 bg-indigo-50/50 border-b border-indigo-100">
-                      <span className="text-xs text-indigo-500 font-medium">全局风格：</span>
-                      <span className="text-xs text-gray-600 ml-1">{script.global_style_prompt}</span>
-                    </div>
-                    <div className="divide-y divide-gray-100">
-                      {script.storyboard.map((shot, idx) => (
-                        <div key={idx} className="flex gap-3 px-4 py-2 hover:bg-gray-50">
-                          <span className="flex-shrink-0 w-5 h-5 bg-indigo-100 text-indigo-700 rounded-full flex items-center justify-center text-xs font-bold mt-0.5">{idx+1}</span>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-0.5">
-                              <span className="text-xs font-semibold text-gray-800">{shot.logic}</span>
-                              {shot.video_type === 'image-to-video'
-                                ? <span className="text-[10px] px-1 py-0.5 bg-orange-100 text-orange-600 rounded font-bold">🖼 图生视频</span>
-                                : <span className="text-[10px] px-1 py-0.5 bg-gray-100 text-gray-500 rounded font-bold">✏️ 文生视频</span>}
+                        {!generatingScript && script && (
+                          <div className="border border-indigo-200 rounded-lg overflow-hidden bg-white shadow-sm">
+                            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 px-4 py-2 flex items-center justify-between">
+                              <span className="text-white font-bold text-sm">📋 分镜脚本（{script.storyboard.length} 个分镜）</span>
+                              <span className="text-indigo-100 text-[10px]" title={script.global_style_prompt}>{script.global_style_prompt.slice(0, 60)}...</span>
                             </div>
-                            <div className="text-[11px] text-gray-500 break-words">{shot.scene_prompt}</div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    {(generatingLtx || ltxClips.some(v => v !== '')) && (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-[10px] text-left">
+                                <thead className="bg-indigo-50 text-gray-600 font-bold border-b border-indigo-100">
+                                  <tr>
+                                    <th className="px-2 py-2">镜号</th>
+                                    <th className="px-2 py-2">时间</th>
+                                    <th className="px-2 py-2">景别&运镜</th>
+                                    <th className="px-2 py-2">画面描述</th>
+                                    <th className="px-2 py-2 w-[250px]">AI Prompt</th>
+                                    <th className="px-2 py-2">音频</th>
+                                    <th className="px-2 py-2">转场</th>
+                                    <th className="px-2 py-2 w-[80px]">操作</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100">
+                                  {script.storyboard.map((shot, idx) => (
+                                    <tr key={idx} className="hover:bg-gray-50 align-top">
+                                      <td className="px-2 py-2"><span className="w-4 h-4 bg-indigo-100 text-indigo-700 rounded-full flex items-center justify-center text-[9px] font-bold">{idx+1}</span></td>
+                                      <td className="px-2 py-2 text-gray-500">{shot.time}</td>
+                                      <td className="px-2 py-2 font-medium text-gray-700">{shot.shot_and_camera}</td>
+                                      <td className="px-2 py-2 text-gray-600 max-w-[200px]">{shot.logic}</td>
+                                      <td className="px-2 py-2 text-gray-400 break-words">{shot.scene_prompt}</td>
+                                      <td className="px-2 py-2 text-gray-500">{shot.audio}</td>
+                                      <td className="px-2 py-2 text-gray-500">{shot.transition}</td>
+                                      <td className="px-2 py-2">
+                                        <Button size="small" type="dashed" className="text-[10px] px-1 h-6" onClick={() => handleSearchStock(shot.scene_prompt.split(',')[0].trim())}>🔍 搜素材</Button>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                            {(generatingLtx || ltxClips.some(v => v !== '')) && (
                       <div className="border-t border-indigo-100 p-3 bg-gray-50">
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-xs font-bold text-gray-700">
@@ -2132,27 +2382,39 @@ const TEXT_MODELS = [
                   <div className="border border-orange-200 rounded-lg overflow-hidden bg-white shadow-sm">
                     <div className="bg-gradient-to-r from-orange-500 to-red-500 px-4 py-2 flex items-center justify-between">
                       <span className="text-white font-bold text-sm">📋 分镜脚本（{explainScript.storyboard.length} 个分镜 · 9:16）</span>
-                      <Button size="small" icon={<VideoCameraOutlined />}
-                        onClick={() => _generateLtx(explainScript, setGeneratingExplainLtx, setExplainLtxProgress, setExplainLtxClips)}
-                        loading={generatingExplainLtx} disabled={generatingExplainLtx}
-                        className="bg-white/20 text-white border-white/40 font-bold text-xs">
-                        {generatingExplainLtx ? explainLtxProgress || 'LTX 渲染中...' : '▶ LTX 生成视频（RunPod）'}
-                      </Button>
+                      <span className="text-orange-100 text-[10px]" title={explainScript.global_style_prompt}>{explainScript.global_style_prompt.slice(0, 60)}...</span>
                     </div>
-                    <div className="p-3 bg-orange-50/50 border-b border-orange-100">
-                      <span className="text-xs text-orange-500 font-medium">全局风格：</span>
-                      <span className="text-xs text-gray-600 ml-1">{explainScript.global_style_prompt}</span>
-                    </div>
-                    <div className="divide-y divide-gray-100">
-                      {explainScript.storyboard.map((shot, idx) => (
-                        <div key={idx} className="flex gap-3 px-4 py-2 hover:bg-gray-50">
-                          <span className="flex-shrink-0 w-5 h-5 bg-orange-100 text-orange-700 rounded-full flex items-center justify-center text-xs font-bold mt-0.5">{idx+1}</span>
-                          <div className="flex-1 min-w-0">
-                            <span className="text-xs font-semibold text-gray-800 block mb-0.5">{shot.logic}</span>
-                            <span className="text-[11px] text-gray-500 break-words">{shot.scene_prompt}</span>
-                          </div>
-                        </div>
-                      ))}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-[10px] text-left">
+                        <thead className="bg-orange-50 text-gray-600 font-bold border-b border-orange-100">
+                          <tr>
+                            <th className="px-2 py-2">镜号</th>
+                            <th className="px-2 py-2">时间</th>
+                            <th className="px-2 py-2">景别&运镜</th>
+                            <th className="px-2 py-2">画面描述</th>
+                            <th className="px-2 py-2 w-[250px]">AI Prompt</th>
+                            <th className="px-2 py-2">音频</th>
+                            <th className="px-2 py-2">转场</th>
+                            <th className="px-2 py-2 w-[80px]">操作</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {explainScript.storyboard.map((shot, idx) => (
+                            <tr key={idx} className="hover:bg-gray-50 align-top">
+                              <td className="px-2 py-2"><span className="w-4 h-4 bg-orange-100 text-orange-700 rounded-full flex items-center justify-center text-[9px] font-bold">{idx+1}</span></td>
+                              <td className="px-2 py-2 text-gray-500">{shot.time}</td>
+                              <td className="px-2 py-2 font-medium text-gray-700">{shot.shot_and_camera}</td>
+                              <td className="px-2 py-2 text-gray-600 max-w-[200px]">{shot.logic}</td>
+                              <td className="px-2 py-2 text-gray-400 break-words">{shot.scene_prompt}</td>
+                              <td className="px-2 py-2 text-gray-500">{shot.audio}</td>
+                              <td className="px-2 py-2 text-gray-500">{shot.transition}</td>
+                              <td className="px-2 py-2">
+                                <Button size="small" type="dashed" className="text-[10px] px-1 h-6" onClick={() => handleSearchStock(shot.scene_prompt.split(',')[0].trim())}>🔍 搜素材</Button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                     {(generatingExplainLtx || explainLtxClips.some(v => v !== '')) && (
                       <div className="border-t border-orange-100 p-3 bg-gray-50">
@@ -2208,6 +2470,133 @@ const TEXT_MODELS = [
               </div>
             </Form.Item>
 
+            {/* ── 视频素材库 ── */}
+            <Form.Item label={<span className="font-bold text-gray-700 block">视频素材库</span>} className="mb-8">
+              <div className="flex flex-col gap-3">
+                <div className="p-3 bg-sky-50 border border-sky-100 rounded-lg text-xs text-sky-700">
+                  🎬 根据分镜脚本自动提取关键词，一键搜索 <strong>Pexels · Pixabay · Unsplash</strong> 海量正版视频/图片素材。
+                </div>
+                <div className="flex gap-2 items-center flex-wrap">
+                  <Input
+                    value={stockQuery}
+                    onChange={e => setStockQuery(e.target.value)}
+                    onPressEnter={() => handleSearchStock(stockQuery)}
+                    placeholder="输入关键词搜索素材，例如：green tea ceremony"
+                    className="flex-1 min-w-[200px]"
+                    size="small"
+                  />
+                  <Button type="primary" size="small" loading={searchingStock} onClick={() => handleSearchStock(stockQuery)}
+                    className="bg-sky-600 border-sky-600 font-bold">搜索</Button>
+                  <Button size="small" icon={<RobotOutlined />} onClick={() => handleSearchFromScriptData(script || explainScript || detailScript)} loading={searchingStock}
+                    disabled={!script && !explainScript && !detailScript}
+                    className="text-indigo-600 border-indigo-300 bg-indigo-50 font-bold">
+                    从分镜脚本提取关键词
+                  </Button>
+                </div>
+                {/* Tab 切换 */}
+                <div className="flex gap-0 border-b border-gray-200">
+                  {(['pexels','pixabay','unsplash'] as const).map(tab => (
+                    <button key={tab} onClick={() => setStockTab(tab)}
+                      className={`text-xs px-4 py-2 font-bold border-b-2 transition-all cursor-pointer ${stockTab === tab ? 'border-sky-500 text-sky-600' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>
+                      {tab === 'pexels' ? '🎥 Pexels' : tab === 'pixabay' ? '📹 Pixabay' : '📷 Unsplash'}
+                      <span className="ml-1 text-[10px] text-gray-400">
+                        ({tab === 'pexels' ? pexelsResults.length : tab === 'pixabay' ? pixabayResults.length : unsplashResults.length})
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                {/* 搜索结果 */}
+                {searchingStock ? (
+                  <div className="flex items-center gap-2 py-8 justify-center text-sky-600">
+                    <Spin size="small" /><span className="text-sm">正在搜索三平台素材...</span>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
+                    {stockTab === 'pexels' && pexelsResults.map((v, i) => {
+                      const thumb = v.image;
+                      const videoFile = v.video_files?.find((f: any) => f.quality === 'sd') || v.video_files?.[0];
+                      return (
+                        <div key={i} className="rounded-lg overflow-hidden border border-gray-200 shadow-sm group relative bg-black">
+                          <div className="aspect-video relative overflow-hidden">
+                            {thumb && <img src={thumb} className="w-full h-full object-cover opacity-80 group-hover:opacity-60 transition-opacity" />}
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <VideoCameraOutlined className="text-white text-2xl opacity-70" />
+                            </div>
+                          </div>
+                          <div className="p-1.5 bg-white">
+                            <div className="text-[10px] text-gray-500 truncate">{v.duration}s · {v.width}×{v.height}</div>
+                            <div className="flex gap-1 mt-1">
+                              {videoFile && <a href={videoFile.link} target="_blank" rel="noopener noreferrer"
+                                className="text-[10px] text-sky-600 hover:underline font-bold flex items-center gap-0.5">
+                                <DownloadOutlined />下载
+                              </a>}
+                              <a href={v.url} target="_blank" rel="noopener noreferrer"
+                                className="text-[10px] text-gray-400 hover:underline ml-auto">预览</a>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {stockTab === 'pixabay' && pixabayResults.map((v, i) => {
+                      const thumb = v.videos?.medium?.thumbnail || v.userImageURL;
+                      const videoUrl = v.videos?.medium?.url || v.videos?.small?.url;
+                      return (
+                        <div key={i} className="rounded-lg overflow-hidden border border-gray-200 shadow-sm group relative bg-black">
+                          <div className="aspect-video relative overflow-hidden">
+                            {thumb && <img src={thumb} className="w-full h-full object-cover opacity-80 group-hover:opacity-60 transition-opacity" />}
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <VideoCameraOutlined className="text-white text-2xl opacity-70" />
+                            </div>
+                          </div>
+                          <div className="p-1.5 bg-white">
+                            <div className="text-[10px] text-gray-500 truncate">{v.duration}s · {v.videos?.medium?.width}×{v.videos?.medium?.height}</div>
+                            <div className="flex gap-1 mt-1">
+                              {videoUrl && <a href={videoUrl} target="_blank" rel="noopener noreferrer"
+                                className="text-[10px] text-sky-600 hover:underline font-bold flex items-center gap-0.5">
+                                <DownloadOutlined />下载
+                              </a>}
+                              <a href={v.pageURL} target="_blank" rel="noopener noreferrer"
+                                className="text-[10px] text-gray-400 hover:underline ml-auto">预览</a>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {stockTab === 'unsplash' && unsplashResults.map((p, i) => (
+                      <div key={i} className="rounded-lg overflow-hidden border border-gray-200 shadow-sm group relative">
+                        <div className="aspect-video relative overflow-hidden bg-gray-100">
+                          <img src={p.urls?.small} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                        </div>
+                        <div className="p-1.5 bg-white">
+                          <div className="text-[10px] text-gray-500 truncate">{p.user?.name}</div>
+                          <div className="flex gap-1 mt-1">
+                            <a href={`${p.links?.download}&force=true`} target="_blank" rel="noopener noreferrer"
+                              className="text-[10px] text-sky-600 hover:underline font-bold flex items-center gap-0.5">
+                              <DownloadOutlined />下载
+                            </a>
+                            <a href={p.links?.html} target="_blank" rel="noopener noreferrer"
+                              className="text-[10px] text-gray-400 hover:underline ml-auto">预览</a>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    {!searchingStock && stockTab === 'pexels' && pexelsResults.length === 0 && stockQuery && (
+                      <div className="col-span-6 text-center py-8 text-gray-400 text-sm">暂无 Pexels 结果，尝试换个关键词</div>
+                    )}
+                    {!searchingStock && stockTab === 'pixabay' && pixabayResults.length === 0 && stockQuery && (
+                      <div className="col-span-6 text-center py-8 text-gray-400 text-sm">暂无 Pixabay 结果，尝试换个关键词</div>
+                    )}
+                    {!searchingStock && stockTab === 'unsplash' && unsplashResults.length === 0 && stockQuery && (
+                      <div className="col-span-6 text-center py-8 text-gray-400 text-sm">暂无 Unsplash 结果，尝试换个关键词</div>
+                    )}
+                    {!stockQuery && (
+                      <div className="col-span-6 text-center py-8 text-gray-300 text-sm">输入关键词或点击「从分镜脚本提取关键词」开始搜索</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </Form.Item>
+
             {/* ── 商详视频（16:9，≤3min，展示在商详图文顶部） ── */}
             <Form.Item label={<span className="font-bold text-gray-700 block">商详视频</span>} className="mb-12">
               <div className="flex flex-col gap-4">
@@ -2251,27 +2640,39 @@ const TEXT_MODELS = [
                   <div className="border border-teal-200 rounded-lg overflow-hidden bg-white shadow-sm">
                     <div className="bg-gradient-to-r from-teal-600 to-cyan-600 px-4 py-2 flex items-center justify-between">
                       <span className="text-white font-bold text-sm">📋 分镜脚本（{detailScript.storyboard.length} 个分镜 · 16:9）</span>
-                      <Button size="small" icon={<VideoCameraOutlined />}
-                        onClick={() => _generateLtx(detailScript, setGeneratingDetailLtx, setDetailLtxProgress, setDetailLtxClips)}
-                        loading={generatingDetailLtx} disabled={generatingDetailLtx}
-                        className="bg-white/20 text-white border-white/40 font-bold text-xs">
-                        {generatingDetailLtx ? detailLtxProgress || 'LTX 渲染中...' : '▶ LTX 生成视频（RunPod）'}
-                      </Button>
+                      <span className="text-teal-100 text-[10px]" title={detailScript.global_style_prompt}>{detailScript.global_style_prompt.slice(0, 60)}...</span>
                     </div>
-                    <div className="p-3 bg-teal-50/50 border-b border-teal-100">
-                      <span className="text-xs text-teal-500 font-medium">全局风格：</span>
-                      <span className="text-xs text-gray-600 ml-1">{detailScript.global_style_prompt}</span>
-                    </div>
-                    <div className="divide-y divide-gray-100">
-                      {detailScript.storyboard.map((shot, idx) => (
-                        <div key={idx} className="flex gap-3 px-4 py-2 hover:bg-gray-50">
-                          <span className="flex-shrink-0 w-5 h-5 bg-teal-100 text-teal-700 rounded-full flex items-center justify-center text-xs font-bold mt-0.5">{idx+1}</span>
-                          <div className="flex-1 min-w-0">
-                            <span className="text-xs font-semibold text-gray-800 block mb-0.5">{shot.logic}</span>
-                            <span className="text-[11px] text-gray-500 break-words">{shot.scene_prompt}</span>
-                          </div>
-                        </div>
-                      ))}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-[10px] text-left">
+                        <thead className="bg-teal-50 text-gray-600 font-bold border-b border-teal-100">
+                          <tr>
+                            <th className="px-2 py-2">镜号</th>
+                            <th className="px-2 py-2">时间</th>
+                            <th className="px-2 py-2">景别&运镜</th>
+                            <th className="px-2 py-2">画面描述</th>
+                            <th className="px-2 py-2 w-[250px]">AI Prompt</th>
+                            <th className="px-2 py-2">音频</th>
+                            <th className="px-2 py-2">转场</th>
+                            <th className="px-2 py-2 w-[80px]">操作</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {detailScript.storyboard.map((shot, idx) => (
+                            <tr key={idx} className="hover:bg-gray-50 align-top">
+                              <td className="px-2 py-2"><span className="w-4 h-4 bg-teal-100 text-teal-700 rounded-full flex items-center justify-center text-[9px] font-bold">{idx+1}</span></td>
+                              <td className="px-2 py-2 text-gray-500">{shot.time}</td>
+                              <td className="px-2 py-2 font-medium text-gray-700">{shot.shot_and_camera}</td>
+                              <td className="px-2 py-2 text-gray-600 max-w-[200px]">{shot.logic}</td>
+                              <td className="px-2 py-2 text-gray-400 break-words">{shot.scene_prompt}</td>
+                              <td className="px-2 py-2 text-gray-500">{shot.audio}</td>
+                              <td className="px-2 py-2 text-gray-500">{shot.transition}</td>
+                              <td className="px-2 py-2">
+                                <Button size="small" type="dashed" className="text-[10px] px-1 h-6" onClick={() => handleSearchStock(shot.scene_prompt.split(',')[0].trim())}>🔍 搜素材</Button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                     {(generatingDetailLtx || detailLtxClips.some(v => v !== '')) && (
                       <div className="border-t border-teal-100 p-3 bg-gray-50">
@@ -2327,89 +2728,66 @@ const TEXT_MODELS = [
               </div>
             </Form.Item>
 
-            <Form.Item label={<span className="font-bold text-gray-700">图文详情</span>} className="mb-8">
-              <div className="border border-gray-200 rounded-xl bg-white overflow-hidden shadow-sm">
-                <div className="flex h-[450px]">
-                  <div className="w-[280px] bg-gray-100 border-r border-gray-200 flex flex-col">
-                    <div className="h-10 flex justify-between items-center px-4 border-b border-gray-200 bg-white">
-                      <span className="text-xs font-bold text-gray-800">页面预览</span>
-                    </div>
-                    <div className="flex-1 overflow-y-auto p-4 flex flex-col items-center">
-                      {detailImages.length > 0 ? (
-                        <div className="w-full bg-white shadow-md border border-gray-200 relative pb-10">
-                          <div className="h-24 bg-gradient-to-br from-indigo-900 to-purple-900 text-white p-3 flex flex-col justify-center">
-                              <h3 className="text-sm font-black text-yellow-400 m-0">我们敢送</h3>
-                          </div>
-                          <div className="h-20 bg-gray-50 flex items-center justify-center text-gray-400 text-xs border-t border-gray-100">向下滚动查看全图...</div>
-                        </div>
-                      ) : (
-                        <div className="mt-20 text-center text-gray-400">
-                          <PictureOutlined className="text-3xl mb-2 opacity-50" />
-                          <p className="text-[10px]">等待排版...</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex-1 p-4 flex flex-col bg-gray-50">
-                    <div className="flex justify-between items-center mb-4 bg-white p-2 rounded-lg border border-gray-200">
-                      <span className="text-xs font-bold text-gray-700 ml-2">详情排版画布</span>
-                      <div className="flex gap-2 items-center">
-                        {detailImages.some(img => img !== '') && (
-                          <Button 
-                            onClick={handleDownloadAllDetails} 
-                            loading={downloadingDetails} 
-                            icon={<DownloadOutlined />} 
-                            size="small" 
-                            className="text-green-600 border-green-300 bg-green-50 font-bold"
-                          >
-                            一键打包下载
-                          </Button>
-                        )}
-                        
-                        {generatingDetailImages && (
-                          <Button type="text" danger size="small" icon={<CloseCircleOutlined />} onClick={() => stopGeneration('detail')} title="停止生成" />
-                        )}
-                        <div className="flex gap-1">
-                          {RENDER_MODELS.map((model) => (
-                            <Button 
-                              key={model.id}
-                              size="small"
-                              type={detailImageModel === model.id ? "primary" : "default"}
-                              className={detailImageModel === model.id ? 'bg-orange-600 font-bold' : 'text-gray-600 text-[10px]'}
-                              onClick={() => handleGenerateDetails(model.id)}
-                              loading={detailImageModel === model.id}
-                              disabled={generatingDetailImages && detailImageModel !== model.id}
+              <Form.Item label={<span className="font-bold text-gray-700 block">图文详情</span>} className="mb-10">
+                <div className="border border-gray-200 rounded-xl bg-white overflow-hidden shadow-sm">
+                  
+                  <div className="p-3 border-b border-gray-200">
+                    <div className="mb-2 flex flex-col gap-2">
+                      <div className="text-sm font-medium text-gray-700">详情页参考素材 ({detailR2Images.length})</div>
+                      <div className="flex gap-2 flex-wrap">
+                        {detailR2Images.map((img, idx) => (
+                          <div key={idx} className="relative w-[60px] h-[60px] border border-gray-200 rounded-lg overflow-hidden group shadow-sm">
+                            <img src={img} className="w-full h-full object-cover" />
+                            <div 
+                              className="absolute top-0 right-0 bg-red-500 text-white w-4 h-4 flex items-center justify-center text-[10px] cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDetailR2Images(prev => prev.filter(u => u !== img));
+                              }}
+                              title="删除"
                             >
-                              {model.label.split(' ')[0]}
-                            </Button>
-                          ))}
+                              ×
+                            </div>
+                          </div>
+                        ))}
+                        <div 
+                          onClick={() => openR2Modal('detail')}
+                          className="w-[60px] h-[60px] border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 bg-white text-gray-400 hover:text-blue-500 transition-colors"
+                        >
+                          <CloudOutlined className="text-xl mb-1" />
+                          <span className="text-[10px] font-bold">选择图片</span>
                         </div>
                       </div>
                     </div>
-                    <div className="flex-1 overflow-y-auto border border-gray-200 p-4 bg-white rounded-lg">
-                      {detailImages.length > 0 ? (
-                        <div className="grid grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2 content-start">
-                          {detailImages.map((imgUrl, i) => (
-                            <div key={i} className="aspect-square bg-gray-50 border border-gray-200 rounded relative flex items-center justify-center hover:border-orange-400 cursor-move transition-all overflow-hidden">
-                              <span className="absolute top-1 left-1 bg-gray-800/80 text-white text-[10px] px-1 rounded z-10">{i+1}</span>
-                              {imgUrl ? (
-                                <Image src={imgUrl} className="w-full h-full object-cover" />
-                              ) : (
-                                <PictureOutlined className="text-xl text-gray-300" />
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="h-full flex flex-col items-center justify-center text-gray-400 text-xs border-2 border-dashed border-gray-200 rounded-lg">
-                          点击右上角使用 AI 排版，或手动拖入图片
-                        </div>
+                  </div>
+
+                  <div className="bg-gray-50 p-3 border-b border-gray-200 flex justify-between items-center">
+                    <div className="flex gap-2 items-center">
+                      {RENDER_MODELS.map(m => <Button key={m.id} size="small" onClick={() => handleGenerateDetails(m.id)} loading={generatingDetails && detailImageModel === m.id}>{m.label.split(' ')[0]}</Button>)}
+                      {generatingDetails && (
+                        <span className="text-[10px] text-orange-600 ml-2 flex items-center">
+                          {detailRenderProgress}
+                          <Button type="text" danger size="small" icon={<CloseCircleOutlined />} className="ml-1 py-0 h-auto" onClick={() => stopGeneration('detail')} title="停止生成" />
+                        </span>
                       )}
+                      <span className="text-[10px] text-gray-400 ml-1">3:4 竖版详情页</span>
                     </div>
+                    <Button size="small" icon={<DownloadOutlined />} onClick={handleDownloadAllDetails}>打包下载</Button>
+                  </div>
+                  <div className="h-[500px] overflow-y-auto p-5 bg-gray-100/50">
+                    <Image.PreviewGroup>
+                      <div className="grid grid-cols-5 gap-4">
+                        {detailImages.map((img, i) => (
+                          <div key={i} className="aspect-[3/4] bg-white border border-gray-200 rounded-xl flex items-center justify-center overflow-hidden relative cursor-pointer">
+                            {img ? <Image src={img} className="w-full h-full object-cover" alt={`详情${i+1}`} style={{objectFit:'cover',width:'100%',height:'100%'}} preview={{mask: <span className="text-xs">预览</span>}} /> : <PictureOutlined className="text-xl text-gray-300" />}
+                            <span className="absolute top-1 left-1 bg-black/50 text-white text-[9px] px-1 rounded z-10 pointer-events-none">{i+1}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </Image.PreviewGroup>
                   </div>
                 </div>
-              </div>
-            </Form.Item>
+              </Form.Item>
 
             <Form.Item label={<span className="font-bold text-gray-700 block">生成买家秀</span>} className="mb-12">
               <div className="flex flex-col">
@@ -2533,6 +2911,35 @@ const TEXT_MODELS = [
 
             <Form.Item label={<span className="font-bold text-gray-700 block">白底图</span>} className="mb-8">
               <div className="flex flex-col">
+                
+                <div className="mb-4 flex flex-col gap-2">
+                  <div className="text-sm font-medium text-gray-700">白底图参考素材 ({selectedR2Images.length})</div>
+                  <div className="flex gap-2 flex-wrap">
+                    {selectedR2Images.map((img, idx) => (
+                      <div key={idx} className="relative w-[60px] h-[60px] border border-gray-200 rounded-lg overflow-hidden group shadow-sm">
+                        <img src={img} className="w-full h-full object-cover" />
+                        <div 
+                          className="absolute top-0 right-0 bg-red-500 text-white w-4 h-4 flex items-center justify-center text-[10px] cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleR2ImageSelection(img);
+                          }}
+                          title="删除"
+                        >
+                          ×
+                        </div>
+                      </div>
+                    ))}
+                    <div 
+                      onClick={() => openR2Modal('global')}
+                      className="w-[60px] h-[60px] border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 bg-white text-gray-400 hover:text-blue-500 transition-colors"
+                    >
+                      <CloudOutlined className="text-xl mb-1" />
+                      <span className="text-[10px] font-bold">选择图片</span>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="flex justify-between items-center flex-wrap gap-3 mb-6 bg-gray-50 p-4 border border-gray-100 rounded-lg">
                   <div className="flex flex-wrap gap-3 items-center">
                     {RENDER_MODELS.map((model) => (
@@ -2550,7 +2957,7 @@ const TEXT_MODELS = [
                     {generatingWhiteBgImages && (
                       <span className="ml-4 text-purple-600 font-bold text-xs self-center flex items-center">
                         <Spin size="small" className="mr-2"/>{whiteBgRenderProgress}
-                        <Button type="text" danger size="small" icon={<CloseCircleOutlined />} className="ml-2" onClick={() => stopGeneration('whitebg')} title="停止生成" />
+                        <Button type="text" danger size="small" icon={<CloseCircleOutlined />} className="ml-2 py-0" onClick={() => stopGeneration('whitebg')} title="停止生成" />
                       </span>
                     )}
                   </div>
@@ -2589,6 +2996,35 @@ const TEXT_MODELS = [
 
             <Form.Item label={<span className="font-bold text-gray-700 block">SKU规格图</span>} className="mb-8">
               <div className="flex flex-col">
+                
+                <div className="mb-4 flex flex-col gap-2">
+                  <div className="text-sm font-medium text-gray-700">SKU参考素材 ({selectedR2Images.length})</div>
+                  <div className="flex gap-2 flex-wrap">
+                    {selectedR2Images.map((img, idx) => (
+                      <div key={idx} className="relative w-[60px] h-[60px] border border-gray-200 rounded-lg overflow-hidden group shadow-sm">
+                        <img src={img} className="w-full h-full object-cover" />
+                        <div 
+                          className="absolute top-0 right-0 bg-red-500 text-white w-4 h-4 flex items-center justify-center text-[10px] cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleR2ImageSelection(img);
+                          }}
+                          title="删除"
+                        >
+                          ×
+                        </div>
+                      </div>
+                    ))}
+                    <div 
+                      onClick={() => openR2Modal('global')}
+                      className="w-[60px] h-[60px] border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 bg-white text-gray-400 hover:text-blue-500 transition-colors"
+                    >
+                      <CloudOutlined className="text-xl mb-1" />
+                      <span className="text-[10px] font-bold">选择图片</span>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="flex justify-between items-center flex-wrap gap-3 mb-6 bg-gray-50 p-4 border border-gray-100 rounded-lg">
                   <div className="flex flex-wrap gap-3 items-center">
                     {RENDER_MODELS.map((model) => (
@@ -2606,7 +3042,7 @@ const TEXT_MODELS = [
                     {generatingSkuImages && (
                       <span className="ml-4 text-purple-600 font-bold text-xs self-center flex items-center">
                         <Spin size="small" className="mr-2"/>{skuRenderProgress}
-                        <Button type="text" danger size="small" icon={<CloseCircleOutlined />} className="ml-2" onClick={() => stopGeneration('sku')} title="停止生成" />
+                        <Button type="text" danger size="small" icon={<CloseCircleOutlined />} className="ml-2 py-0" onClick={() => stopGeneration('sku')} title="停止生成" />
                       </span>
                     )}
                   </div>
@@ -2616,7 +3052,7 @@ const TEXT_MODELS = [
                       type="primary" 
                       icon={<DownloadOutlined />} 
                       onClick={handleDownloadSkuImages} 
-                      loading={downloadingSku}
+                      loading={downloading}
                       className="bg-green-600 font-bold"
                     >
                       一键打包下载
@@ -2662,7 +3098,7 @@ const TEXT_MODELS = [
         <div className="h-[400px] overflow-y-auto mt-4">
           <div className="grid grid-cols-5 gap-3 p-2">
             {r2Gallery.map((url, idx) => {
-              const isSelected = r2ModalTarget === 'global' ? selectedR2Images.includes(url) : buyerShowR2Images.includes(url);
+              const isSelected = r2ModalTarget === 'global' ? selectedR2Images.includes(url) : (r2ModalTarget === 'buyerShow' ? buyerShowR2Images.includes(url) : detailR2Images.includes(url));
               return (
               <div 
                 key={idx} 
