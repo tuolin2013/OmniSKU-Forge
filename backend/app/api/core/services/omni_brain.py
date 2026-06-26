@@ -72,7 +72,7 @@ class OmniBrain(BaseBrain):
         chat_url = self._get_chat_url(model)
         session = self._make_session()
         try:
-            response = session.post(chat_url, json=payload, headers=headers, timeout=90)
+            response = session.post(chat_url, json=payload, headers=headers, timeout=180)
             if response.status_code == 200:
                 return response.json()["choices"][0]["message"]["content"]
             else:
@@ -107,45 +107,40 @@ class OmniBrain(BaseBrain):
             "stream": True
         }
         chat_url = self._get_chat_url(model)
-        # 流式请求不走 Retry（流式重试会丢 chunk），改用手动重试外循环
-        max_attempts = 3
-        for attempt in range(1, max_attempts + 1):
-            session = self._make_session()
-            try:
-                response = session.post(
-                    chat_url, json=payload, headers=headers,
-                    stream=True, timeout=(10, 120)  # (connect_timeout, read_timeout)
-                )
-                if response.status_code != 200:
-                    yield f"\n❌ 大模型请求失败 HTTP {response.status_code}: {response.text}"
-                    return
-
-                for line in response.iter_lines():
-                    if line:
-                        decoded_line = line.decode('utf-8').strip()
-                        if decoded_line.startswith("data: "):
-                            content = decoded_line[6:]
-                            if content == "[DONE]":
-                                return
-                            try:
-                                chunk = json.loads(content)
-                                delta = chunk['choices'][0]['delta']
-                                if 'content' in delta:
-                                    yield delta['content']
-                            except Exception:
-                                pass
-                return  # 正常结束，退出重试循环
-            except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
-                logger.warning(f"[_call_llm_stream] 第 {attempt}/{max_attempts} 次网络异常: {e}")
-                if attempt == max_attempts:
-                    yield f"\n❌ 网络流中断 (已重试{max_attempts}次): {e}"
-                    return
-                # 继续下一次重试
-            except Exception as e:
-                yield f"\n❌ 网络流中断: {e}"
+        session = self._make_session()
+        try:
+            response = session.post(
+                chat_url, json=payload, headers=headers,
+                stream=True, timeout=(15, 45)  # connect 15s, read 45s per chunk
+            )
+            if response.status_code != 200:
+                yield f"\n❌ 大模型请求失败 HTTP {response.status_code}: {response.text}"
                 return
-            finally:
-                session.close()
+
+            for line in response.iter_lines():
+                if line:
+                    decoded_line = line.decode('utf-8').strip()
+                    if decoded_line.startswith("data: "):
+                        content = decoded_line[6:]
+                        if content == "[DONE]":
+                            return
+                        try:
+                            chunk = json.loads(content)
+                            delta = chunk['choices'][0]['delta']
+                            if 'content' in delta:
+                                yield delta['content']
+                        except Exception:
+                            pass
+        except requests.exceptions.Timeout as e:
+            logger.warning(f"[_call_llm_stream] 超时: {e}")
+            yield f"\n❌ 大模型响应超时，请重试"
+        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+            logger.warning(f"[_call_llm_stream] 网络异常: {e}")
+            yield f"\n❌ 网络流中断: {e}"
+        except Exception as e:
+            yield f"\n❌ 网络流中断: {e}"
+        finally:
+            session.close()
 
     # ==========================================
     # 🏭 终极工业流 (One-Click Pipeline Agents)
@@ -264,26 +259,8 @@ class OmniBrain(BaseBrain):
         live_data = web_search_competitors(keyword=refined_keyword, platform=platform)
         print(f"📡 [市场调研智能体] 情报回传完毕: {live_data[:80]}...")
 
-        prompt = f"""
-        Role: 你是一名全网顶级的【电商市场研究员】（Market Researcher）。
-        
-        Context:
-        【产品基础档案】: {json.dumps(sku_info, ensure_ascii=False)}
-        【目标平台】: {platform}
-        【探针传回的最新全网情报】:
-        {live_data}
-        
-        Task: 请交叉比对【基础档案】与【最新情报】，深度分析该产品在 {platform} 平台的消费者心理与竞争态势。
-        如果最新情报显示"搜索失败"或"切换至大模型内部知识库推演"，请完全依赖你自身的庞大知识储备进行深度推演，不得以情报缺失为由降低输出质量。
-        
-        输出要求：严格输出一段 300 字以内的精炼《洞察简报》，必须包含以下三个维度：
-        1. 平台受众人群的隐秘痛点；
-        2. 竞品常见套路及本产品的错位打击策略；
-        3. 极易触发高转化的话术语态建议（贴合 {platform} 平台用户习惯）。
-        
-        注意：直接输出纯文本内容即可，不需要 JSON，不需要 Markdown，不要客套话。
-        """
-        return self._call_llm(prompt, platform=platform, category=system_category)
+        # 直接返回原始情报，由下游 PM 策划智能体自行消化，省去一次 LLM 调用
+        return live_data
 
     # ==========================================
     # 🎖️ 合规审查智能体 (Compliance Reviewer / Critic Agent)
@@ -524,22 +501,7 @@ class OmniBrain(BaseBrain):
             full_draft_chunks.append(chunk)
             yield chunk
 
-        # 流式结束后，在后台做一次轻量合规检查（只取前 500 字做 Critic，降低 token 消耗）
-        full_draft = "".join(full_draft_chunks)
-        draft_for_critic = full_draft[:500] if len(full_draft) > 500 else full_draft
-        try:
-            evaluation = self.run_critic_agent(draft_for_critic, self.platform, category_rules)
-            score = evaluation["score"]
-            passed = evaluation["pass"]
-            advice = evaluation["advice"]
-            logger.info(
-                f"[合规审查-后台] 平台:{self.platform} 得分:{score} 通过:{passed}"
-            )
-            # 只有严重违规（score < 60）才在末尾追加提示，不打断已生成的内容
-            if not passed and advice:
-                yield f"\n\n⚠️ **[合规提示]** 策划案触发了合规审查（得分{score}），建议修改：{advice}"
-        except Exception as e:
-            logger.warning(f"[合规审查-后台] 审查异常，已跳过: {e}")
+        # 合规审查已禁用（避免后台 LLM 调用挂起影响系统稳定性）
 
     def run_ops_agent(self, sku_info: dict, pm_report: str, platform: str, model: str = "gpt-5.5") -> str:
         # 获取路由标签
@@ -630,7 +592,10 @@ class OmniBrain(BaseBrain):
         
         🔥 避坑指南：
         绝对不能在提示词里硬编码写死 "bottle"（瓶装）或 "box"（盒装），除非你明确知道该产品的真实包装形态。建议使用通用词 "the product packaging"（产品包装）或 "the product"（产品），让垫图来控制真实形态。
-        
+
+        🔥 防审美疲劳约束（视觉节奏）：
+        不要每一张图片都把产品放在中心展示。必须建立视觉节奏感：10张主图中，可以有3张展示包装，3张展示细节特写/原料（不露出包装），4张展示生活方式氛围/人物痛点。
+
         格式要求：
         {{
             "global_style_prompt": "commercial product photography, studio lighting, 8k resolution, photorealistic typography --ar 3:4",
@@ -673,6 +638,9 @@ class OmniBrain(BaseBrain):
         
         🔥 避坑指南：
         绝对不能在提示词里硬编码写死 "bottle"（瓶装）或 "box"（盒装），除非你明确知道该产品的真实包装形态。建议使用通用词 "the product packaging"（产品包装）或 "the product"（产品），让垫图来控制真实形态。
+
+        🔥 防审美疲劳约束（视觉节奏）：
+        不要每一张图片都把产品放在中心展示。15屏切片中，应包含不露出完整包装的"痛点人物特写"、"原料微距特写"、"证书文件特写"等。在使用不露出包装的场景时，在英文提示词中明确加入 "NO packaging box" 以防止AI强制生成产品盒。
 
         格式要求：
         {{
@@ -759,43 +727,38 @@ class OmniBrain(BaseBrain):
         total_duration = num_clips * clip_duration
 
         prompt = f"""
-        Role: 电商平台百万粉丝级视频编导与视觉总监。
-        Task: 根据给定的【图文策划案】与【老板意图】，策划一份包含 {num_clips} 个分镜的"{total_duration}秒高转化商品视频剧本"。
+        【角色设定】你现在是一位拥有10年经验的好莱坞商业片导演兼资深剪辑师。你需要为我创作一份高度标准化的视频分镜脚本。
+        
+        【核心要求】
+        这份脚本必须具备“双驱”功能：
+        能指导AI生成： 必须包含精准的英文提示词（Prompt），结构为“主体 + 动作 + 环境 + 光影 + 摄像机运动”，用于输入给 AI 视频/图像生成工具。
+        能指导人类剪辑： 画面描述必须极度具象，不能有抽象的心理描写；必须包含明确的景别、剪辑点和转场提示。
 
+        【项目信息】
         【图文策划案】: {pm_report}
         【老板意图】: {ops_report}
         【目标平台】: {platform}
-        【画面规格】: {ratio} 比例（{orientation_desc}），每个分镜约 {clip_duration} 秒
+        视频时长： 包含 {num_clips} 个分镜，总时长 {total_duration} 秒
+        画面规格： {ratio} 比例（{orientation_desc}），每个分镜约 {clip_duration} 秒
 
-        要求：
-        1. 必须输出 {num_clips} 个分镜，每个分镜约 {clip_duration} 秒，总时长约 {total_duration} 秒。
-        2. `scene_prompt` 必须是纯英文，符合 LTX-Video / Sora / Seedance 等视频生成大模型的提示词规范。
-        3. 每条 scene_prompt 开头必须注明画面方向，例如 "{orientation_desc} video."。
-        4. 请强调运镜方式（Pan right, Zoom in, Slow motion, Dolly shot 等）。
-        5. 每个分镜必须判断该镜头是否需要产品实物出镜，并填写 `video_type` 字段：
-           - "image-to-video"：需要产品实物出镜（如产品特写、开箱展示、使用场景带产品），渲染时将使用产品实拍图作为参考帧
-           - "text-to-video"：纯场景/人物/情绪镜头，无需产品出镜（如痛点描述、生活场景、结尾感情渲染）
-        6. 严格输出合法 JSON，绝不能包含任何 Markdown 标记符。
-
-        输出格式：
+        【输出格式】
+        严格输出合法 JSON，绝不能包含任何 Markdown 标记符。
         {{
-            "global_style_prompt": "{orientation_desc} video, e-commerce commercial style, photorealistic, 4k resolution, highly detailed.",
+            "global_style_prompt": "{orientation_desc} video, e-commerce commercial style, photorealistic, cinematic lighting, highly detailed.",
             "ratio": "{ratio}",
             "storyboard": [
                 {{
-                    "logic": "前{clip_duration}秒黄金钩子：痛点共鸣",
-                    "scene_prompt": "{orientation_desc} video. A close up shot of... (纯英文视频生成提示词)",
-                    "video_type": "text-to-video"
-                }},
-                {{
-                    "logic": "产品强势登场",
-                    "scene_prompt": "{orientation_desc} video. Hero shot of the product packaging...",
-                    "video_type": "image-to-video"
-                }},
-                ... (共需输出 {num_clips} 个)
+                    "time": "0-3秒",
+                    "shot_and_camera": "特写 (CU), 极速推镜头",
+                    "logic": "极度具象的画面描述 (给人类剪辑看)，例如：男主低头，雨水滴在睫毛上...",
+                    "scene_prompt": "{orientation_desc} video. Cinematic lighting, extreme close up, fast push in... (纯英文视频生成提示词，结构为 主体+动作+环境+光影+摄像机运动)",
+                    "audio": "[音效]... [旁白]...",
+                    "transition": "硬切 (Hard Cut) / 匹配剪辑 等",
+                    "video_type": "text-to-video" 或 "image-to-video"
+                }}
             ]
         }}
-        说明：必须且只能生成 {num_clips} 个分镜，每条都必须包含 video_type 字段。
+        说明：必须且只能生成 {num_clips} 个分镜，严格遵守双驱分镜脚本逻辑。画面描述必须极度具象。
         """
         response = self._call_llm(prompt)
 
@@ -844,14 +807,20 @@ class OmniBrain(BaseBrain):
     def run_designer_detail_image(self, pm_report: str, ops_report: str) -> str:
         prompt = f"""
         Role: 视觉总监。
-        Task: 根据【图文策划案】中的「模块四：15屏详情页深度转化排版大纲」，逐一将这 15 屏的策划翻译为实际生图引擎需要的英文提示词。
+        Task: 根据【图文策划案】和【老板意图】，严格遵循“高转化率详情页四模块逻辑骨架”生成详情页生图提示词。
         【图文策划案】: {pm_report}
         【老板意图】: {ops_report}
         
         要求：严格输出 JSON 格式，绝对不要包含 markdown 符号。
+
+        🔥 高转化率详情页四模块逻辑骨架（总共生成15屏切片，请合理分配到以下四个模块）：
+        模块一：注意力抓取（黄金前三屏）- 痛点场景带入、核心卖点（USP）直给、价值前置。
+        模块二：信任构建与实力背书 - 权威证明、销量与口碑、竞品对比（踩一捧一）。
+        模块三：产品细节与卖点拆解（SKU价值支撑） - 场景化展示、材质与工艺、SKU策略引导。
+        模块四：转化逼单（行动号召） - 售后保障、促销与稀缺性、明确的行动号召。
         
         🔥 核心视觉特效指令：
-        1. 必须完全遵照图文策划案中模块四规划的每一屏的卖点和场景进行翻译！
+        1. 必须完全遵照以上的四个核心模块的逻辑骨架，结合图文策划案中的卖点和场景进行翻译！
         2. 本次详情页风格要求统一、具有强烈的商业质感。
         3. 在你的 `scene_prompt`（英文生图提示词）中，必须包含类似以下的句式描述："A premium commercial product shot, elegant layout for e-commerce detail page. Chinese text reading exactly: '从图文策划案中提取的该屏核心中文卖点或痛点短语'."
         
@@ -863,16 +832,17 @@ class OmniBrain(BaseBrain):
             "global_style_prompt": "commercial product photography, e-commerce detail page infographic, high-end studio lighting, 8k resolution, photorealistic typography --ar 16:9",
             "storyboard": [
                 {{
-                    "logic": "痛点共鸣", 
-                    "scene_prompt": "A close-up shot of an anxious pet owner. Chinese text reading exactly: '痛点文字'. High-end commercial photography."
+                    "logic": "模块一：注意力抓取 - 痛点场景带入", 
+                    "scene_prompt": "A close-up shot of an anxious pet owner facing a problem. Chinese text reading exactly: '痛点文字'. High-end commercial photography."
                 }},
                 {{
-                    "logic": "核心成分", 
-                    "scene_prompt": "Macro shot of natural ingredients and the main product packaging. Chinese text reading exactly: '核心成分'. Elegant composition."
+                    "logic": "模块二：信任构建 - 权威证明", 
+                    "scene_prompt": "Product packaging displayed with premium certification badges and testing reports. Chinese text reading exactly: '权威认证'. Elegant composition."
                 }}
+                // ... 请按四大模块逻辑继续补充，共15个分镜
             ]
         }}
-        说明：必须生成正好 15 个分镜（15屏）。每个分镜的 `scene_prompt` 里都要包含对应的精简中文卖点，并让 AI 自由发挥最美的商业构图。
+        说明：必须生成正好 15 个分镜（15屏）。必须涵盖注意力抓取、信任构建、产品细节、转化逼单这四大模块。每个分镜的 `scene_prompt` 里都要包含对应的精简中文卖点，并让 AI 自由发挥最美的商业构图。
         """
         response = self._call_llm(prompt)
         
