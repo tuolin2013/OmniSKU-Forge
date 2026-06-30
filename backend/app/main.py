@@ -17,7 +17,8 @@ from io import BytesIO
 
 from app.api.core.services.knowledge_base import product_db
 from app.api.routers import catalog
-from app.api.v1 import video, agents, r2, tts
+from app.api.v1 import video, agents, r2, tts, plans, media_proxy
+
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -70,6 +71,9 @@ app.include_router(video.router, prefix="/api/v1/video", tags=["video"])
 app.include_router(agents.router)   # 前缀已在模块内定义
 app.include_router(r2.router)       # 前缀已在模块内定义
 app.include_router(tts.router)      # 前缀已在模块内定义
+app.include_router(plans.router)    # 策划案持久化
+app.include_router(media_proxy.router)  # SadTalker / VoxCPM2 媒体端点代理
+
 
 
 # ------------------------------------------------------------------ #

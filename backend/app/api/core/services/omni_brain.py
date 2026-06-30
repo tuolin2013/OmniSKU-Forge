@@ -719,6 +719,7 @@ class OmniBrain(BaseBrain):
         platform: str,
         ratio: str = "16:9",
         num_clips: int = 12,
+        model: str = "gpt-5.5",
     ) -> str:
         # 根据宽高比决定画面方向描述
         orientation_desc = "Vertical 9:16" if ratio == "9:16" else "Horizontal 16:9"
@@ -748,19 +749,20 @@ class OmniBrain(BaseBrain):
             "ratio": "{ratio}",
             "storyboard": [
                 {{
+                    "shot_number": "01",
                     "time": "0-3秒",
                     "shot_and_camera": "特写 (CU), 极速推镜头",
                     "logic": "极度具象的画面描述 (给人类剪辑看)，例如：男主低头，雨水滴在睫毛上...",
                     "scene_prompt": "{orientation_desc} video. Cinematic lighting, extreme close up, fast push in... (纯英文视频生成提示词，结构为 主体+动作+环境+光影+摄像机运动)",
                     "audio": "[音效]... [旁白]...",
                     "transition": "硬切 (Hard Cut) / 匹配剪辑 等",
-                    "video_type": "text-to-video" 或 "image-to-video"
+                    "video_type": "text-to-video" // 或 "image-to-video"
                 }}
             ]
         }}
-        说明：必须且只能生成 {num_clips} 个分镜，严格遵守双驱分镜脚本逻辑。画面描述必须极度具象。
+        说明：必须且只能生成 {num_clips} 个分镜，严格遵守双驱分镜脚本逻辑。如果不是 text-to-video，必须明确填写 video_type 为 image-to-video。画面描述必须极度具象。镜号必须为 "01", "02" 等格式。
         """
-        response = self._call_llm(prompt)
+        response = self._call_llm(prompt, model=model, platform=platform)
 
         if response.startswith("❌"):
             raise ValueError(response)
@@ -803,6 +805,106 @@ class OmniBrain(BaseBrain):
         mark = chr(96) * 3 
         cleaned_response = response.replace(mark + "json", "").replace(mark, "").strip()
         return cleaned_response
+
+    # ==========================================
+    # 🆕 多SKU合并模式（同一链接，多规格）
+    # ==========================================
+    def run_pm_agent_stream_multi(
+        self,
+        multi_sku_info: dict,
+        text_desc: str,
+        image_urls: list,
+        model: str = "gpt-5.5",
+        research_report: str = "",
+    ):
+        """
+        多SKU合并策划：为"同一商品链接下多个SKU规格"生成一份整体策划案。
+        multi_sku_info 来自 knowledge_base.get_multi_sku_info()。
+
+        策划案结构：
+        1. 整体商品定位与差异化（覆盖全线SKU）
+        2. 主图卖点矩阵（覆盖全线，突出系列感）
+        3. 各SKU规格分镜（每个SKU 2-3张专属主图提示词）
+        4. 详情页骨架（适用全线）
+        5. 标题库（含全系列关键词）
+        """
+        import json as _json
+
+        sku_list = multi_sku_info.get("__sku_list__", [])
+        sku_details = multi_sku_info.get("__sku_details__", {})
+        category = multi_sku_info.get("__system_category__", "pet")
+
+        # 构建每个SKU的摘要
+        sku_summaries = []
+        for name in sku_list:
+            data = sku_details.get(name, {})
+            summary_fields = {k: v for k, v in data.items() if not k.startswith("__") and v}
+            sku_summaries.append(f"【{name}】\n{_json.dumps(summary_fields, ensure_ascii=False, indent=2)}")
+        sku_block = "\n\n".join(sku_summaries)
+
+        if category == "tea":
+            category_hint = "张家界莓茶（藤茶）系列产品"
+            platform_hint = "茶类电商（主打健康、产地直销、天然无添加）"
+        else:
+            category_hint = "宠物营养保健品系列产品"
+            platform_hint = "宠物电商（主打功效、安全、宠物主人情感认同）"
+
+        image_hint = ""
+        if image_urls:
+            image_hint = f"\n（前端已上传 {len(image_urls)} 张参考图，策划案中的主图提示词应参考这些真实产品视觉风格）"
+
+        research_block = f"\n\n【市场调研智能体深度洞察报告】:\n{research_report}" if research_report else ""
+
+        prompt = f"""
+你是一位顶级电商视觉策划专家，擅长为「同一店铺链接下多SKU系列产品」制定整体策划案。
+
+【任务背景】
+本次需要为以下 {len(sku_list)} 个 SKU 规格（同属一个商品链接）制定一份完整的图文策划案：
+品类：{category_hint}
+平台定位：{platform_hint}
+老板战术意图：{text_desc}{image_hint}
+
+【各SKU规格详细信息】
+{sku_block}
+{research_block}
+
+【输出要求】
+请输出一份结构完整的「多SKU合并图文策划案」，必须包含以下六个模块：
+
+---
+# 模块一：整体商品定位与核心差异化
+（覆盖全线 {len(sku_list)} 个SKU，统一的品牌故事、核心卖点、目标人群画像）
+
+---
+# 模块二：系列主图卖点矩阵（10张主图分镜）
+（强调系列感与差异化，让消费者一眼看出各SKU的区别与价值）
+为每张主图给出：
+- 视觉策略（打什么痛点/卖点）
+- 英文生图提示词（scene_prompt，专业商业摄影风格）
+
+---
+# 模块三：各SKU专属规格图分镜
+（每个SKU 2-3张专属主图，突出该规格的独特卖点）
+{''.join([f"- {name}：2-3张专属分镜提示词{chr(10)}" for name in sku_list])}
+
+---
+# 模块四：详情页骨架（适用全线SKU）
+（痛点开场 → 系列介绍 → 各SKU对比表 → 信任背书 → 转化逼单）
+给出 8-10 屏详情页的结构与每屏核心文案
+
+---
+# 模块五：高转化标题库
+（覆盖全系列，包含品类词、功效词、人群词，至少 5 条候选标题）
+
+---
+# 模块六：买家秀评价策略
+（针对不同SKU各设计 2 条真实感评价文案，共 {len(sku_list) * 2} 条）
+
+请直接输出策划案正文，不要有开场白和总结语。
+"""
+
+        for chunk in self._call_llm_stream(prompt, model=model, category=category):
+            yield chunk
 
     def run_designer_detail_image(self, pm_report: str, ops_report: str) -> str:
         prompt = f"""

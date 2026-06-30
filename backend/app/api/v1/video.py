@@ -22,6 +22,19 @@ class VideoGenerationRequest(BaseModel):
         default_factory=list,
         description="产品参考图 URL 列表。传入时启用图生视频模式，CLIP 自动从多张图中选最匹配的一张作为参考。",
     )
+    ratio: str = Field(default="16:9", description="视频宽高比：1:1 / 16:9 / 9:16 / 3:4")
+    resolution: Optional[str] = Field(
+        default=None,
+        description="分辨率档位：480p/720p/1080p/4k。不同档位计费不同，不传则用后端默认（720p）。",
+    )
+    duration: Optional[int] = Field(default=None, description="视频时长（秒），不传则用后端默认。")
+    # 以下参数仅 LTX/Wan2.2 异步单镜渲染（/generate/async）使用
+    fast: bool = Field(default=False, description="False=Wan2.2 正式出片，True=LTX 快速预览")
+    num_frames: int = Field(default=97, description="总帧数（Wan2.2 推荐 97）")
+    steps: int = Field(default=50, description="去噪步数（正式出片 50，预览 20）")
+    background_style: str = Field(default="gradient", description="商品背景：gradient/white/warm/dark")
+
+
 
 
 class VideoGenerationResponse(BaseModel):
@@ -43,21 +56,34 @@ class VideoTaskResponse(BaseModel):
 @router.post("/generate/async", response_model=VideoTaskResponse)
 async def create_video_async(body: VideoGenerationRequest):
     """
-    异步提交视频生成任务，返回 task_id 用于轮询进度。
+    异步提交 LTX/Wan2.2 单镜视频生成任务，立即返回 task_id 用于前端轮询。
+
+    设计要点：渲染本身（Wan2.2 每条约 60s，冷启动更久）完全脱离本 HTTP 请求，
+    本接口只负责把任务提交给 RunPod 并拿到 task_id 后立即返回，避免浏览器/代理
+    因长连接空闲而断开（即此前的 "Failed to fetch"）。后续由 /tasks/{task_id} 轮询。
     """
     from app.api.core.services.ltx_video_engine import generate_video_ltx_async
     try:
         task_id_or_err = await asyncio.to_thread(
-            generate_video_ltx_async, 
-            body.prompt, 
+            generate_video_ltx_async,
+            body.prompt,
             body.image_urls or None,
-            fast=False
+            body.ratio,
+            body.num_frames,
+            body.steps,
+            3.5,  # cfg_scale 默认
+            "worst quality, inconsistent motion, blurry, jittery, distorted",
+            body.fast,
+            body.background_style,
         )
         if task_id_or_err.startswith("❌"):
             raise HTTPException(status_code=500, detail=task_id_or_err)
         return VideoTaskResponse(task_id=task_id_or_err, status="pending")
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
 
 
 @router.get("/tasks/{task_id}", response_model=VideoTaskResponse)
@@ -111,10 +137,19 @@ async def create_video(body: VideoGenerationRequest, http_request: Request):
     try:
         video_task = asyncio.ensure_future(
             asyncio.wait_for(
-                asyncio.to_thread(generate_video, body.prompt, body.image_urls or None, stop_event),
+                asyncio.to_thread(
+                    generate_video,
+                    body.prompt,
+                    body.image_urls or None,
+                    stop_event,
+                    body.ratio,
+                    body.resolution,
+                    body.duration,
+                ),
                 timeout=_VIDEO_TIMEOUT_S,
             )
         )
+
         watch_task = asyncio.ensure_future(_watch_disconnect())
 
         try:
@@ -140,6 +175,7 @@ class VideoScriptRequest(BaseModel):
     platform: str
     ratio: str = "16:9"
     num_clips: int = 12
+    model: str = "gpt-5.5"
 
 @router.post("/design-script")
 async def design_video_script(request: VideoScriptRequest):
@@ -152,6 +188,7 @@ async def design_video_script(request: VideoScriptRequest):
             platform=request.platform,
             ratio=request.ratio,
             num_clips=request.num_clips,
+            model=request.model,
         )
         return {"code": 200, "data": script_json_str}
     except Exception as e:

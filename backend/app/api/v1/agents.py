@@ -59,6 +59,13 @@ class ImageGenRequest(BaseModel):
     platform: str = "unknown"
     product_name: str = "product"
     image_type: str = "main"
+    ratio: str = "1:1"
+    # 品类标识：pet（宠物营养保健品）/ tea（张家界莓茶）/ auto（根据 product_name 自动判断）
+    category: str = Field("auto", description="品类：pet / tea / auto")
+    # 每张图的角色标注，与 image_urls 一一对应
+    # 可选值：packaging（包装图，文字/logo绝对保真）/ visual_ref（视觉参考，仅作氛围）
+    # 不传时：tea 品类第1张默认 packaging，其余 visual_ref；pet 品类全部 packaging
+    image_roles: list[str] = Field(default_factory=list, description="每张图的角色：packaging / visual_ref")
 
 
 class OneClickRequest(BaseModel):
@@ -66,6 +73,15 @@ class OneClickRequest(BaseModel):
     sku_name: str
     text_desc: str
     image_urls: list[str] = Field(default_factory=list)
+
+
+class MultiSkuPmRequest(BaseModel):
+    """多SKU合并策划请求：同一商品链接下多个规格SKU的整体策划案"""
+    platform: str
+    sku_names: list[str] = Field(..., description="本次合并策划涉及的所有SKU名称列表")
+    text_desc: str = Field(..., description="老板战术意图")
+    image_urls: list[str] = Field(default_factory=list)
+    model: str = Field("gpt-5.5", description="文本生成模型 ID")
 
 
 # ------------------------------------------------------------------ #
@@ -136,6 +152,64 @@ async def pm_analyze_stream(req: PmAnalyzeRequest):
 
 
 # ------------------------------------------------------------------ #
+# 多SKU合并策划（同一链接，多规格）
+# ------------------------------------------------------------------ #
+
+@router.post("/pm-analyze-multi")
+async def pm_analyze_multi_stream(req: MultiSkuPmRequest):
+    """
+    多SKU合并模式流式策划案。
+    适用于：所有SKU合并在同一商品链接下，每个产品作为规格选项的场景。
+    原有单品 /pm-analyze 接口完全不受影响。
+    """
+    from app.api.core.services.knowledge_base import product_db as _db
+
+    agents = get_brain(req.platform)
+
+    # 从知识库获取多SKU合并数据
+    multi_sku_info = _db.get_multi_sku_info(req.sku_names)
+    if not multi_sku_info:
+        return {
+            "code": 404,
+            "message": f"知识库中未找到任何有效SKU，请检查：{req.sku_names}",
+        }
+
+    valid_skus = multi_sku_info.get("__sku_list__", [])
+
+    async def _generate():
+        yield f"【系统提示】🔍 [多SKU合并模式] 正在为 {len(valid_skus)} 个SKU规格检索竞品趋势...\n"
+        yield f"【系统提示】📦 本次合并SKU：{', '.join(valid_skus)}\n\n"
+
+        loop = asyncio.get_event_loop()
+
+        # 用第一个SKU做市场调研（代表品类）
+        first_sku_info = _db.get_sku_info(valid_skus[0]) if valid_skus else {}
+        research_report = await loop.run_in_executor(
+            None,
+            lambda: agents.run_research_agent(sku_info=first_sku_info, platform=req.platform),
+        )
+
+        yield "【系统提示】✅ [市场调研] 分析完毕，[多SKU策划智能体] 正在生成整体策划案...\n\n"
+        yield "================================================\n\n"
+
+        try:
+            for chunk in agents.run_pm_agent_stream_multi(
+                multi_sku_info=multi_sku_info,
+                text_desc=req.text_desc,
+                image_urls=req.image_urls,
+                model=req.model,
+                research_report=research_report,
+            ):
+                yield chunk
+                await asyncio.sleep(0)
+        except Exception as e:
+            logger.error(f"pm_analyze_multi_stream error: {e}")
+            yield f"\n\n【系统提示】❌ 生成中断: {str(e)}\n\n"
+
+    return StreamingResponse(_generate(), headers=_stream_headers(), media_type="text/plain")
+
+
+# ------------------------------------------------------------------ #
 # 标题 & SEO
 # ------------------------------------------------------------------ #
 
@@ -163,13 +237,13 @@ async def ops_title(req: OpsRequest):
 def _design_endpoint(brief_fn_name: str):
     """工厂函数：为各设计类接口生成通用处理函数，减少重复代码。"""
     async def _handler(req: DesignRequest):
-        agents = get_brain(req.platform)
         try:
+            agents = get_brain(req.platform)
             fn = getattr(agents, brief_fn_name)
             result = fn(pm_report=req.pm_report, ops_report=req.ops_report)
             return {"code": 200, "data": result}
         except Exception as exc:
-            logger.error("%s 失败: %s", brief_fn_name, exc)
+            logger.error("%s 失败: %s\n%s", brief_fn_name, exc, traceback.format_exc())
             return {"code": 500, "message": str(exc), "data": None}
     return _handler
 
@@ -192,6 +266,11 @@ router.add_api_route(
 router.add_api_route(
     "/design-sku-image-brief",
     _design_endpoint("run_designer_sku_image"),
+    methods=["POST"],
+)
+router.add_api_route(
+    "/design-ad-creative-brief",
+    _design_endpoint("run_designer_ad_creative"),
     methods=["POST"],
 )
 
@@ -219,11 +298,19 @@ async def design_buyer_show(req: DesignRequest):
 async def generate_image(req: ImageGenRequest):
     """生成单张图片并上传到 R2，返回公开 URL。"""
     try:
-        image_url = ImageRenderEngine.generate_main_image(
-            prompt=req.prompt,
-            image_urls=req.image_urls,
-            model_name=req.model,
-            previous_image_url=req.previous_image_url,
+        loop = asyncio.get_event_loop()
+        image_url = await loop.run_in_executor(
+            None,
+            lambda: ImageRenderEngine.generate_main_image(
+                prompt=req.prompt,
+                image_urls=req.image_urls,
+                model_name=req.model,
+                previous_image_url=req.previous_image_url,
+                ratio=req.ratio,
+                category=req.category,
+                product_name=req.product_name,
+                image_roles=req.image_roles,
+            )
         )
 
         # 下载后上传 R2（带防机审护盾）

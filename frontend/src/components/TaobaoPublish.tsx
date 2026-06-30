@@ -64,6 +64,16 @@ export default function TaobaoPublish() {
   const [videoRenderProgress, setVideoRenderProgress] = useState("");
   const [videoClips, setVideoClips] = useState<string[]>(Array(12).fill(''));
 
+  // 🧩 商品组合图（多商品组合，不变形、无文字）
+  const [generatingCombo, setGeneratingCombo] = useState(false);
+  const [comboImageModel, setComboImageModel] = useState<string>('');
+  const [comboRenderProgress, setComboRenderProgress] = useState("");
+  const [comboImages, setComboImages] = useState<string[]>(Array(3).fill(''));
+  const [comboRatio, setComboRatio] = useState<'1:1' | '3:4' | '4:3' | '16:9'>('1:1');
+  const [comboCount, setComboCount] = useState<number>(3);
+  const [comboPrompt, setComboPrompt] = useState<string>('');
+
+
   // LTX RunPod 视频（script-first 模式，与 PDD 一致）
   const [ltxServiceReady, setLtxServiceReady] = useState<boolean | null>(null);
   useEffect(() => {
@@ -75,7 +85,31 @@ export default function TaobaoPublish() {
   const [ltxFastMode, setLtxFastMode] = useState(false);
   const [ltxBackgroundStyle, setLtxBackgroundStyle] = useState<string>('gradient');
 
-  type TaobaoScriptData = { global_style_prompt: string; ratio?: string; storyboard: { time: string; shot_and_camera: string; logic: string; scene_prompt: string; audio: string; transition: string; video_type?: string; reference_image?: string }[] };
+  type TaobaoScriptData = { global_style_prompt: string; ratio?: string; storyboard: { shot_number?: string; time: string; shot_and_camera: string; logic: string; scene_prompt: string; audio: string; transition: string; video_type?: string; reference_image?: string }[] };
+
+  const handleDownloadCsv = (scriptData: TaobaoScriptData | null, filename: string) => {
+    if (!scriptData || !scriptData.storyboard || scriptData.storyboard.length === 0) {
+      return message.warning('没有可下载的分镜脚本！');
+    }
+    const headers = ['镜号', '时间', '景别&运镜', '画面描述', 'AI Prompt', '音频', '转场'];
+    const rows = scriptData.storyboard.map((shot, i) => [
+      shot.shot_number || (i + 1).toString().padStart(2, '0'),
+      shot.time,
+      shot.shot_and_camera,
+      shot.logic,
+      shot.scene_prompt,
+      shot.audio,
+      shot.transition
+    ]);
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.map(cell => `"${(cell || '').replace(/"/g, '""')}"`).join(','))
+    ].join('\n');
+    
+    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    saveAs(blob, `${filename}.csv`);
+    message.success('分镜脚本下载成功！');
+  };
   const [generatingScript, setGeneratingScript] = useState(false);
   const [videoScript, setVideoScript] = useState<TaobaoScriptData | null>(null);
   const [generatingLtxVideo, setGeneratingLtxVideo] = useState(false);
@@ -142,9 +176,18 @@ export default function TaobaoPublish() {
       });
   }, []);
   
-  const [selectedR2Images, setSelectedR2Images] = useState<string[]>([]); 
+  // Per-section reference images (each section is fully independent)
+  const [refImages11, setRefImages11] = useState<string[]>([]);
+  const [refImages34, setRefImages34] = useState<string[]>([]);
+  const [refImagesWhiteBg, setRefImagesWhiteBg] = useState<string[]>([]);
+  const [refImagesDetail, setRefImagesDetail] = useState<string[]>([]);
+  const [refImagesSku, setRefImagesSku] = useState<string[]>([]);
+  const [refImagesAd, setRefImagesAd] = useState<string[]>([]);
+  const [refImagesVideo, setRefImagesVideo] = useState<string[]>([]);
+  const [refImagesCombo, setRefImagesCombo] = useState<string[]>([]);
   const [isR2ModalVisible, setIsR2ModalVisible] = useState(false);
-  const [r2ModalTarget, setR2ModalTarget] = useState<'global' | 'buyerShow'>('global');
+  const [r2ModalTarget, setR2ModalTarget] = useState<'main11' | 'main34' | 'whitebg' | 'detail' | 'sku' | 'ad' | 'video' | 'buyerShow' | 'combo'>('main11');
+
   const [r2Gallery, setR2Gallery] = useState<string[]>([]);
   const [fetchingR2, setFetchingR2] = useState(false);
   const [uploadingR2, setUploadingR2] = useState(false); 
@@ -162,6 +205,173 @@ export default function TaobaoPublish() {
   const [generatingAdImages, setGeneratingAdImages] = useState<Record<string, boolean>>({});
   const [adImageProgress, setAdImageProgress] = useState<Record<string, string>>({});
   const adAbortControllers = useRef<Record<string, AbortController | null>>({});
+
+  // 🎬 万象视频广告 — 每种规格独立脚本 + 渲染（对标 catScripts 结构）
+  const [adVideoTab, setAdVideoTab] = useState<number>(0); // 当前选中视频规格 index
+  const [adVideoScripts, setAdVideoScripts] = useState<Record<number, TaobaoScriptData | null>>({});
+  const [adVideoGeneratingScript, setAdVideoGeneratingScript] = useState<Record<number, boolean>>({});
+  const [adVideoClips, setAdVideoClips] = useState<Record<number, string[]>>({});
+  const [adVideoGeneratingLtx, setAdVideoGeneratingLtx] = useState<Record<string, boolean>>({});
+  const [adVideoLtxProgress, setAdVideoLtxProgress] = useState<Record<number, string>>({});
+  const [adVideoGeneratingSeedance, setAdVideoGeneratingSeedance] = useState<Record<string, boolean>>({});
+  const [adVideoSeedanceProgress, setAdVideoSeedanceProgress] = useState<Record<number, string>>({});
+  const adVideoSeedanceAbort = useRef<Record<string, AbortController | null>>({});
+
+  // 🎬 万象视频广告 — 生成指定规格的分镜脚本
+  const _generateAdVideoScript = async (vcIndex: number) => {
+    const pmReport = form.getFieldValue('pm_report');
+    const opsReport = form.getFieldValue('base_desc') || '';
+    if (!pmReport) return message.warning('请先生成策划案');
+    if (!adCreativeData?.video_creatives?.[vcIndex]) return message.warning('请先生成广告创意策略！');
+    const vc = adCreativeData.video_creatives[vcIndex];
+    const ratio = vc.ratio || '16:9';
+    setAdVideoGeneratingScript(p => ({ ...p, [vcIndex]: true }));
+    setAdVideoScripts(p => ({ ...p, [vcIndex]: null }));
+    message.loading({ content: `${vc.format_label} · 分镜脚本生成中...`, key: `adv_script_${vcIndex}`, duration: 0 });
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/video/design-script`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pm_report: pmReport,
+          ops_report: opsReport,
+          platform: 'taobao',
+          ratio,
+          num_clips: 5,
+          video_category: `万象广告·${vc.format_label}`,
+          extra_instruction: [
+            `【这是付费广告创意脚本，与商品展示视频完全不同！】`,
+            `广告规格：${vc.format_label}（${vc.resolution}），时长约${vc.duration_s}秒，比例${ratio}。`,
+            `广告Hook：${vc.hook_shot}`,
+            `叙事弧线：${vc.narrative_arc}`,
+            `创作要求：`,
+            `1. 必须遵循「Hook 3秒抓眼球 → 痛点共鸣 → 产品解决方案 → 行动号召CTA」的付费广告叙事结构，而非普通产品展示逻辑。`,
+            `2. 镜头语言要有强烈的广告感：大特写冲击开场、字幕强调关键数字/卖点、结尾必须出现品牌logo或促销信息。`,
+            `3. 场景prompt需包含广告常用元素：动态文字特效、对比前后、数据可视化、用户证言画面等。`,
+            `4. 绝对不能生成与「宝贝展示/讲解/科普/试吃/制作过程」等商品详情视频相同的内容。`,
+            `5. 这是投放在淘宝万象平台的付费广告素材，需符合广告审核规范，突出ROI卖点。`,
+          ].join('\n'),
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.code !== 200) throw new Error(data.message || '后端异常');
+      let clean: string = data.data;
+      if (clean.includes('```json')) clean = clean.split('```json')[1].split('```')[0].trim();
+      else if (clean.includes('```')) clean = clean.split('```')[1].split('```')[0].trim();
+      setAdVideoScripts(p => ({ ...p, [vcIndex]: JSON.parse(clean) }));
+      message.success({ content: `${vc.format_label} 分镜脚本就绪！`, key: `adv_script_${vcIndex}`, duration: 3 });
+    } catch (e: any) {
+      message.error({ content: `脚本生成失败: ${e.message}`, key: `adv_script_${vcIndex}`, duration: 4 });
+    } finally {
+      setAdVideoGeneratingScript(p => ({ ...p, [vcIndex]: false }));
+    }
+  };
+
+  const _generateAdVideoLtxScene = async (vcIndex: number, sceneIndex: number) => {
+    const sc = adVideoScripts[vcIndex];
+    if (!sc || sc.storyboard.length === 0) return message.warning('请先生成分镜脚本');
+    const vc = adCreativeData?.video_creatives?.[vcIndex];
+    const ratio = vc?.ratio || '16:9';
+    const scene = sc.storyboard[sceneIndex];
+    if (!scene) return;
+    const key = `${vcIndex}_${sceneIndex}`;
+    setAdVideoGeneratingLtx(p => ({ ...p, [key]: true }));
+    setAdVideoLtxProgress(p => ({ ...p, [vcIndex]: `提交分镜 ${sceneIndex + 1} (Wan2.2)...` }));
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/video/generate-from-script`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          global_style_prompt: sc.global_style_prompt,
+          ratio,
+          storyboard: [{ logic: scene.logic, scene_prompt: scene.scene_prompt, video_type: scene.video_type || 'text-to-video' }],
+          image_urls: scene.reference_image ? [scene.reference_image] : refImagesAd,
+          num_frames: ltxFastMode ? 25 : 97,
+          steps: ltxFastMode ? 20 : 50,
+          fast: ltxFastMode,
+          background_style: ltxBackgroundStyle,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.code === 200 && Array.isArray(data.results)) {
+        const result = data.results[0];
+        if (result?.video_url) {
+          setAdVideoClips(p => {
+            const newClips = [...(p[vcIndex] || Array(sc.storyboard.length).fill(''))];
+            newClips[sceneIndex] = result.video_url;
+            return { ...p, [vcIndex]: newClips };
+          });
+          message.success(`广告分镜 ${sceneIndex + 1} 渲染完成！`);
+        } else {
+          message.warning(`广告分镜 ${sceneIndex + 1} 渲染失败: ${result?.error || '未知错误'}`);
+        }
+      } else throw new Error(data.detail || '后端异常');
+    } catch (e: any) {
+      message.error(`广告分镜 ${sceneIndex + 1} 中断: ${e.message}`);
+    } finally {
+      setAdVideoGeneratingLtx(p => ({ ...p, [key]: false }));
+      setAdVideoLtxProgress(p => ({ ...p, [vcIndex]: '' }));
+    }
+  };
+
+  const _generateAdVideoLtx = async (vcIndex: number) => {
+    const sc = adVideoScripts[vcIndex];
+    if (!sc || sc.storyboard.length === 0) return message.warning('请先生成分镜脚本');
+    const total = sc.storyboard.length;
+    setAdVideoClips(p => ({ ...p, [vcIndex]: p[vcIndex] || Array(total).fill('') }));
+    for (let i = 0; i < total; i++) _generateAdVideoLtxScene(vcIndex, i);
+  };
+
+  const _generateAdVideoSeedanceScene = async (vcIndex: number, sceneIndex: number) => {
+    const sc = adVideoScripts[vcIndex];
+    if (!sc || sc.storyboard.length === 0) return message.warning('请先生成分镜脚本');
+    const scene = sc.storyboard[sceneIndex];
+    if (!scene) return;
+    const key = `${vcIndex}_${sceneIndex}`;
+    setAdVideoGeneratingSeedance(p => ({ ...p, [key]: true }));
+    setAdVideoSeedanceProgress(p => ({ ...p, [vcIndex]: `Seedance 渲染分镜 ${sceneIndex + 1}...` }));
+    adVideoSeedanceAbort.current[key] = new AbortController();
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/video/generate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        signal: adVideoSeedanceAbort.current[key]?.signal,
+        body: JSON.stringify({
+          prompt: `${sc.global_style_prompt}, ${scene.scene_prompt}`,
+          type: 'taobao_ad',
+          image_urls: scene.reference_image ? [scene.reference_image] : refImagesAd,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.url) {
+          setAdVideoClips(p => {
+            const newClips = [...(p[vcIndex] || Array(sc.storyboard.length).fill(''))];
+            newClips[sceneIndex] = data.url;
+            return { ...p, [vcIndex]: newClips };
+          });
+          message.success(`广告分镜 ${sceneIndex + 1} Seedance 完成！`);
+        } else {
+          message.warning(`广告分镜 ${sceneIndex + 1} Seedance 失败`);
+        }
+      } else {
+        message.error(`广告分镜 ${sceneIndex + 1} Seedance HTTP ${res.status}`);
+      }
+    } catch (err: any) {
+      if (err.name !== 'AbortError') message.error(`广告分镜 ${sceneIndex + 1} Seedance 中断: ${err.message}`);
+    } finally {
+      setAdVideoGeneratingSeedance(p => ({ ...p, [key]: false }));
+      setAdVideoSeedanceProgress(p => ({ ...p, [vcIndex]: '' }));
+      adVideoSeedanceAbort.current[key] = null;
+    }
+  };
+
+  const _generateAdVideoSeedance = async (vcIndex: number) => {
+    const sc = adVideoScripts[vcIndex];
+    if (!sc || sc.storyboard.length === 0) return message.warning('请先生成分镜脚本');
+    const total = sc.storyboard.length;
+    setAdVideoClips(p => ({ ...p, [vcIndex]: p[vcIndex] || Array(total).fill('') }));
+    for (let i = 0; i < total; i++) _generateAdVideoSeedanceScene(vcIndex, i);
+  };
 
   const handleGenerateAdCreative = async () => {
     const pmReport = form.getFieldValue('pm_report');
@@ -191,7 +401,7 @@ export default function TaobaoPublish() {
 
   const handleGenerateAdImages = async (ratio: 'ratio_1_1' | 'ratio_3_4' | 'ratio_2_3', modelId: string) => {
     if (!adCreativeData) return message.warning('请先生成广告创意策略！');
-    if (selectedR2Images.length === 0) return message.warning('请先选择产品原图！');
+    if (refImagesAd.length === 0) return message.warning('请先选择产品原图！');
     const ratioStr = ratio === 'ratio_1_1' ? '1:1' : ratio === 'ratio_3_4' ? '3:4' : '2:3';
     const variants = adCreativeData.image_creatives[ratio] || [];
     if (!variants.length) return;
@@ -217,7 +427,7 @@ export default function TaobaoPublish() {
               body: JSON.stringify({
                 prompt: `${adCreativeData.global_ad_style}, ${v.scene_prompt}`,
                 ratio: ratioStr,
-                image_urls: selectedR2Images,
+                image_urls: refImagesAd,
                 model: modelId,
                 platform: 'taobao',
                 product_name: selectedSkuName || 'taobao_product',
@@ -252,25 +462,66 @@ export default function TaobaoPublish() {
   const [ttsSpeed, setTtsSpeed] = useState(1.0);
   const [generatingTts, setGeneratingTts] = useState(false);
   const [ttsVoiceUrl, setTtsVoiceUrl] = useState('');
-  // LivePortrait 数字人
-  const LIVEPORTRAIT_ENDPOINT = process.env.NEXT_PUBLIC_LIVEPORTRAIT_URL || 'https://tuolin2011--liveportrait-api-endpoint.modal.run';
-  const [livePortraitSourceUrl, setLivePortraitSourceUrl] = useState<string>('');
-  const [livePortraitSourceFile, setLivePortraitSourceFile] = useState<File | null>(null);
-  const [generatingLivePortrait, setGeneratingLivePortrait] = useState(false);
-  const [livePortraitProgress, setLivePortraitProgress] = useState('');
-  const [livePortraitVideoUrl, setLivePortraitVideoUrl] = useState('');
-  const [livePortraitAudioMode, setLivePortraitAudioMode] = useState<'tts' | 'custom'>('tts');
-  const [livePortraitCustomAudioUrl, setLivePortraitCustomAudioUrl] = useState('');
-  const [livePortraitCustomAudioFile, setLivePortraitCustomAudioFile] = useState<File | null>(null);
+  // 🗣️ SadTalker 音频驱动说话头：统一走后端代理（避免浏览器直连 modal.run 被 TLS 重置 / CORS）
+  // token 由后端注入，不再暴露到前端包。
+  const SADTALKER_TALK_ENDPOINT = `${API_BASE}/api/v1/media/sadtalker/talk`;
+  const SADTALKER_PETTALK_ENDPOINT = `${API_BASE}/api/v1/media/sadtalker/pet-talk`;
 
-  // VoxCPM2 TTS
-  const VOXCPM2_ENDPOINT = process.env.NEXT_PUBLIC_VOXCPM2_URL || 'https://tuolin2011--voxcpm2-api-factory-voxcpm2service-api-endpoint.modal.run';
+
+  // —— 数字人：人物图 + 音频 → 对口型说话视频 ——
+  const [dhImageUrl, setDhImageUrl] = useState<string>('');
+  const [dhImageFile, setDhImageFile] = useState<File | null>(null);
+  const [dhAudioUrl, setDhAudioUrl] = useState<string>('');      // 上传的音频（优先于 VoxCPM2）
+  const [dhAudioFile, setDhAudioFile] = useState<File | null>(null);
+  const [generatingDh, setGeneratingDh] = useState(false);
+  const [dhProgress, setDhProgress] = useState('');
+  const [dhVideoUrl, setDhVideoUrl] = useState('');
+  // —— 人物正脸图 AI 生成 ——
+  const [dhGenPrompt, setDhGenPrompt] = useState('');
+  const [generatingDhImage, setGeneratingDhImage] = useState(false);
+
+
+  // —— 宠物：宠物图 + 音频 + 真人驱动脸 → 宠物说话视频 ——
+  const [petImageUrl, setPetImageUrl] = useState<string>('');
+  const [petImageFile, setPetImageFile] = useState<File | null>(null);
+  const [petAudioUrl, setPetAudioUrl] = useState<string>('');
+  const [petAudioFile, setPetAudioFile] = useState<File | null>(null);
+  const [petDriverUrl, setPetDriverUrl] = useState<string>('');
+  const [petDriverFile, setPetDriverFile] = useState<File | null>(null);
+  const [generatingPet, setGeneratingPet] = useState(false);
+  const [petProgress, setPetProgress] = useState('');
+  const [petVideoUrl, setPetVideoUrl] = useState('');
+  // —— 宠物正脸图 AI 生成 ——
+  const [petGenPrompt, setPetGenPrompt] = useState('');
+  const [generatingPetImage, setGeneratingPetImage] = useState(false);
+
+
+
+
+  // VoxCPM2 TTS：统一走后端代理（避免浏览器直连 modal.run 被 TLS 重置 / CORS）
+  const VOXCPM2_ENDPOINT = `${API_BASE}/api/v1/media/voxcpm2/generate`;
   const [generatingVoxCpm2, setGeneratingVoxCpm2] = useState(false);
   const [voxCpm2CfgValue, setVoxCpm2CfgValue] = useState(2.0);
   const [voxCpm2Timesteps, setVoxCpm2Timesteps] = useState(10);
   const [voxCpm2Url, setVoxCpm2Url] = useState('');
 
+  // 🎭 VoxCPM2 声音克隆（上传音频/视频，复刻音色）
+  const VOXCPM2_TRANSCRIBE_ENDPOINT = `${API_BASE}/api/v1/media/voxcpm2/transcribe`;
+  const VOXCPM2_CLONE_ENDPOINT = `${API_BASE}/api/v1/media/voxcpm2/clone`;
+
+
+  const [ttsMode, setTtsMode] = useState<'design' | 'clone'>('design'); // 音色设计 / 声音克隆
+  const [cloneRefFile, setCloneRefFile] = useState<File | null>(null);
+  const [cloneRefName, setCloneRefName] = useState('');
+  const [cloneRefIsVideo, setCloneRefIsVideo] = useState(false);
+  const [cloneRefAudioUrl, setCloneRefAudioUrl] = useState('');
+  const [clonePromptText, setClonePromptText] = useState('');
+  const [transcribingClone, setTranscribingClone] = useState(false);
+  const [cloningVoice, setCloningVoice] = useState(false);
+  const [cloneVoiceUrl, setCloneVoiceUrl] = useState('');
+
   // === 🚀 全局任务状态收集 ===
+
   const activeTasks = [
     { name: "生成图文策划案", active: parsing, status: "执行中..." },
     { name: "生成高转化标题", active: generatingTitle, status: "执行中..." },
@@ -307,25 +558,58 @@ export default function TaobaoPublish() {
     }
   };
 
-  const openR2Modal = (target: 'global' | 'buyerShow' = 'global') => {
+  // Helper: get setter for the current modal target
+  const getRefSetter = (target: typeof r2ModalTarget) => {
+    switch (target) {
+      case 'main11':   return setRefImages11;
+      case 'main34':   return setRefImages34;
+      case 'whitebg':  return setRefImagesWhiteBg;
+      case 'detail':   return setRefImagesDetail;
+      case 'sku':      return setRefImagesSku;
+      case 'ad':       return setRefImagesAd;
+      case 'video':    return setRefImagesVideo;
+      case 'combo':    return setRefImagesCombo;
+      case 'buyerShow': return (fn: (p: string[]) => string[]) => setBuyerShowR2Images(prev => {
+
+        const next = fn(prev);
+        return next.slice(0, 5);
+      });
+      default: return (() => {}) as React.Dispatch<React.SetStateAction<string[]>>;
+    }
+  };
+  const getRefImages = (target: typeof r2ModalTarget): string[] => {
+    switch (target) {
+      case 'main11':   return refImages11;
+      case 'main34':   return refImages34;
+      case 'whitebg':  return refImagesWhiteBg;
+      case 'detail':   return refImagesDetail;
+      case 'sku':      return refImagesSku;
+      case 'ad':       return refImagesAd;
+      case 'video':    return refImagesVideo;
+      case 'combo':    return refImagesCombo;
+      case 'buyerShow': return buyerShowR2Images;
+      default: return [];
+
+    }
+  };
+
+  const openR2Modal = (target: typeof r2ModalTarget) => {
     setR2ModalTarget(target);
     setIsR2ModalVisible(true);
     if (r2Gallery.length === 0) fetchR2Images(1, false);
   };
 
   const toggleR2ImageSelection = (url: string) => {
-    if (r2ModalTarget === 'global') {
-      setSelectedR2Images(prev => {
+    const setter = getRefSetter(r2ModalTarget);
+    if (r2ModalTarget === 'buyerShow') {
+      setBuyerShowR2Images(prev => {
         if (prev.includes(url)) return prev.filter(u => u !== url);
+        if (prev.length >= 5) { message.warning('最多只能选择5张买家秀原图！'); return prev; }
         return [...prev, url];
       });
     } else {
-      setBuyerShowR2Images(prev => {
-        if (prev.includes(url)) return prev.filter(u => u !== url);
-        if (prev.length >= 5) {
-          message.warning('最多只能选择5张买家秀原图！');
-          return prev;
-        }
+      setter((prev: string[]) => {
+        if (prev.includes(url)) return prev.filter((u: string) => u !== url);
         return [...prev, url];
       });
     }
@@ -343,11 +627,8 @@ export default function TaobaoPublish() {
       if (data.code === 200) {
         message.success('✅ 成功推送到云端对象存储！');
         onSuccess(data, file);
-        if (r2ModalTarget === 'global') {
-          setSelectedR2Images(prev => [...prev, data.data.url]);
-        } else {
-          setBuyerShowR2Images(prev => [data.data.url, ...prev].slice(0, 5));
-        }
+        const setter = getRefSetter(r2ModalTarget);
+        setter((prev: string[]) => [data.data.url, ...prev]);
         fetchR2Images(1, false);
       } else {
         throw new Error(data.message);
@@ -361,10 +642,9 @@ export default function TaobaoPublish() {
   };
 
   const handleParseFeatures = async (targetModelId: string) => {
-    const skuName = selectedSkuName || form.getFieldValue('target_sku');
     const baseDesc = form.getFieldValue('base_desc');
-    
-    if (!skuName) return message.warning('请先在下拉框选择核心产品 (SKU)！');
+
+    if (!(selectedSkuName || form.getFieldValue('target_sku'))) return message.warning('请先在下拉框选择核心产品 (SKU)！');
     if (!baseDesc) return message.warning('请先输入老板意图！');
 
     setParsingModel(targetModelId);
@@ -377,16 +657,17 @@ export default function TaobaoPublish() {
     const timeoutId = setTimeout(() => abortCtrl.abort(), 300_000);
 
     try {
+      const sharedImages = [...new Set([...refImages11, ...refImages34, ...refImagesWhiteBg])];
       const response = await fetch(`${API_BASE}/api/v1/agents/pm-analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: abortCtrl.signal,
-        body: JSON.stringify({ 
-          platform: 'taobao', 
-          sku_name: skuName,
-          text_desc: baseDesc, 
-          image_urls: selectedR2Images,
-          model: targetModelId
+        body: JSON.stringify({
+          platform: 'taobao',
+          sku_name: selectedSkuName || form.getFieldValue('target_sku'),
+          text_desc: baseDesc,
+          image_urls: sharedImages,
+          model: targetModelId,
         })
       });
       
@@ -479,7 +760,8 @@ export default function TaobaoPublish() {
   const handleGenerateImages = async (targetModelId: string, type: '1:1' | '3:4' | 'whitebg') => {
     const pmReport = form.getFieldValue('pm_report');
     if (!pmReport) return message.warning('请先出具会议纪要！');
-    if (selectedR2Images.length === 0) return message.warning('必须选择原图！');
+    const refImagesForType = type === '1:1' ? refImages11 : type === '3:4' ? refImages34 : refImagesWhiteBg;
+    if (refImagesForType.length === 0) return message.warning('必须选择原图！');
 
     if (type === '1:1') {
       setMainImageModel11(targetModelId);
@@ -502,7 +784,10 @@ export default function TaobaoPublish() {
     abortControllers.current[abortKey] = new AbortController();
 
     try {
-      const briefRes = await fetch(`${API_BASE}/api/v1/agents/design-main-image-brief`, {
+      const briefEndpoint = type === 'whitebg'
+        ? `${API_BASE}/api/v1/agents/design-white-bg-image-brief`
+        : `${API_BASE}/api/v1/agents/design-main-image-brief`;
+      const briefRes = await fetch(briefEndpoint, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           platform: 'taobao',
@@ -559,7 +844,7 @@ export default function TaobaoPublish() {
                 prompt: `${parsedData.global_style_prompt}, ${scene.scene_prompt}`,
                 layout_text: scene.layout_text || scene.headline || '',
                 ratio: type === 'whitebg' ? '1:1' : type,
-                image_urls: selectedR2Images, 
+                image_urls: refImagesForType, 
                 model: targetModelId,
                 platform: 'taobao',
                 product_name: selectedSkuName || 'taobao_product',
@@ -648,7 +933,7 @@ export default function TaobaoPublish() {
               body: JSON.stringify({ 
                 prompt: `${parsedData.global_style_prompt}, ${scene.scene_prompt}`, 
                 ratio: '3:4',
-                image_urls: selectedR2Images, 
+                image_urls: refImagesDetail, 
                 model: targetModelId,
                 platform: 'taobao',
                 product_name: selectedSkuName || 'taobao_product',
@@ -687,7 +972,7 @@ export default function TaobaoPublish() {
   const handleGenerateSkuImages = async (targetModelId: string) => {
     const pmReport = form.getFieldValue('pm_report');
     if (!pmReport) return message.warning('请先出具会议纪要！');
-    if (selectedR2Images.length === 0) return message.warning('必须选择原图！');
+    if (refImagesSku.length === 0) return message.warning('必须选择原图！');
 
     setSkuImageModel(targetModelId);
     setGeneratingSkuImages(true);
@@ -736,7 +1021,7 @@ export default function TaobaoPublish() {
               signal: abortControllers.current['sku']?.signal,
               body: JSON.stringify({ 
                 prompt: `${parsedData.global_style_prompt}, ${scene.scene_prompt}`, 
-                image_urls: selectedR2Images, 
+                image_urls: refImagesSku, 
                 model: targetModelId,
                 platform: 'taobao',
                 product_name: selectedSkuName || 'taobao_product',
@@ -825,9 +1110,9 @@ export default function TaobaoPublish() {
             storyboard: parsedData.storyboard.map((scene: any) => ({
               logic: scene.logic || scene.scene_prompt,
               scene_prompt: scene.scene_prompt,
-              video_type: selectedR2Images.length > 0 ? 'image-to-video' : 'text-to-video',
+              video_type: refImagesVideo.length > 0 ? 'image-to-video' : 'text-to-video',
             })),
-            image_urls: selectedR2Images,
+            image_urls: refImagesVideo,
             num_frames: 97,
             steps: 50,
             fast: false,
@@ -1112,9 +1397,24 @@ export default function TaobaoPublish() {
     setCatScripts(p => ({ ...p, [catId]: null }));
     message.loading({ content: `${cat.emoji} ${cat.label}·分镜脚本生成中...`, key: `cat_script_${catId}`, duration: 0 });
     try {
+      const categoryInstructions: Record<string, string> = {
+        product_demo: '专注展示产品外观、细节质感、颜色和包装，镜头以特写、近景为主，突出产品视觉卖点，不需要真人出镜。',
+        explain: '以真人或动画角色为主角，逐条讲解产品核心卖点和功效，镜头以人物中景、近景为主，配合字幕强调关键词。',
+        knowledge: '围绕产品背后的科学原理、历史文化、产地故事展开，风格偏纪录片，镜头以大景别和空镜为主，建立品牌专业感。',
+        tasting: '真实展示产品冲泡/品尝过程，重点呈现汤色、香气、口感反应，镜头以特写和主观视角为主，增强购买欲望。',
+        process: '完整还原产品从原料到成品的制作工艺流程，镜头以工艺特写和流程全景交替，彰显匠心品质。',
+      };
       const res = await fetch(`${API_BASE}/api/v1/video/design-script`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pm_report: pmReport, ops_report: opsReport, platform: 'taobao', ratio, num_clips: 5, video_category: cat.label }),
+        body: JSON.stringify({
+          pm_report: pmReport,
+          ops_report: opsReport,
+          platform: 'taobao',
+          ratio,
+          num_clips: 5,
+          video_category: cat.label,
+          extra_instruction: `【${cat.label}专属要求】${categoryInstructions[catId] || cat.hint} 视频风格说明：${cat.hint}`,
+        }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -1156,7 +1456,7 @@ export default function TaobaoPublish() {
         body: JSON.stringify({
           prompt: `${sc.global_style_prompt}, ${scene.scene_prompt}`,
           type: 'taobao_main',
-          image_urls: selectedR2Images,
+          image_urls: refImagesVideo,
         }),
       });
       if (res.ok) {
@@ -1219,7 +1519,7 @@ export default function TaobaoPublish() {
           global_style_prompt: sc.global_style_prompt,
           ratio,
           storyboard: [{ logic: scene.logic, scene_prompt: scene.scene_prompt, video_type: scene.video_type || 'text-to-video' }],
-          image_urls: selectedR2Images,
+          image_urls: refImagesVideo,
           num_frames: ltxFastMode ? 25 : 97,
           steps: ltxFastMode ? 20 : 50,
           fast: ltxFastMode,
@@ -1287,7 +1587,7 @@ export default function TaobaoPublish() {
       const storyboard = (parsedData.storyboard || []).map((s: any) => ({
         logic: s.logic || '',
         scene_prompt: s.scene_prompt || '',
-        video_type: selectedR2Images.length > 0 ? 'image-to-video' : 'text-to-video',
+        video_type: refImagesVideo.length > 0 ? 'image-to-video' : 'text-to-video',
       }));
 
       setLtxVideoClips(Array(storyboard.length).fill(''));
@@ -1301,7 +1601,7 @@ export default function TaobaoPublish() {
           global_style_prompt: parsedData.global_style_prompt || '',
           ratio: '16:9',
           storyboard,
-          image_urls: selectedR2Images,
+          image_urls: refImagesVideo,
           num_frames: 97,
           steps: 30,
           fast: false,
@@ -1360,59 +1660,211 @@ export default function TaobaoPublish() {
     }
   };
 
-  // 🐾 LivePortrait 数字人生成
-  const handleGenerateLivePortrait = async () => {
-    if (!livePortraitSourceUrl && !livePortraitSourceFile) return message.warning('请先上传数字人参考图片/视频！');
-    const audioUrl = livePortraitAudioMode === 'tts' ? voxCpm2Url : livePortraitCustomAudioUrl;
-    if (!audioUrl) return message.warning(livePortraitAudioMode === 'tts' ? '请先生成 VoxCPM2 口播语音！' : '请先上传自定义音频！');
-    setGeneratingLivePortrait(true);
-    setLivePortraitProgress('正在提交 LivePortrait 渲染任务...');
-    setLivePortraitVideoUrl('');
+  // 🗣️ 工具：把 blobURL / 远程 URL / VoxCPM2 音频统一取成 Blob
+  const _urlToBlob = async (url: string): Promise<Blob> => {
+    // blob: 开头的本地对象 URL 可直接 fetch；远程 URL 走后端代理避免跨域
+    if (url.startsWith('blob:') || url.startsWith('data:')) {
+      return await (await fetch(url)).blob();
+    }
+    const res = await fetch(`${API_BASE}/api/v1/proxy/download?url=${encodeURIComponent(url)}`);
+    return await res.blob();
+  };
+
+  // 🗣️ 轮询 SadTalker / 宠物口型异步任务，直到拿到 R2 视频 URL。
+  // 后端把渲染任务挂在脱离请求连接的后台跑，结果稳定落进 R2，这里只负责
+  // 周期性查询状态。轮询本身很轻量，断网/超时不会再丢失已渲染好的视频。
+  const _pollSadtalkerTask = async (taskId: string): Promise<string> => {
+    const statusUrl = `${API_BASE}/api/v1/media/sadtalker/tasks/${taskId}`;
+    // 最长等 30 分钟（与后端 Modal timeout 对齐），每 5 秒查一次
+    const maxAttempts = 360;
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(r => setTimeout(r, 5000));
+      try {
+        const res = await fetch(statusUrl);
+        if (!res.ok) continue; // 偶发网络抖动，下一轮再试
+        const data = await res.json();
+        const task = data.data;
+        if (!task) continue;
+        if (task.status === 'done' && task.url) return task.url;
+        if (task.status === 'error') throw new Error(task.message || '渲染失败');
+        // pending：继续等
+      } catch (e: any) {
+        if (e.message && e.message !== 'Failed to fetch') throw e;
+      }
+    }
+    throw new Error('渲染超时，请稍后在图库中查看结果');
+  };
+
+
+  // 🧑 AI 生成人物正脸图（用于数字人口型驱动）
+  const handleGenerateDhFace = async () => {
+    const desc = dhGenPrompt.trim() || '一位友好亲切的中国年轻女性，自然微笑，正对镜头';
+    setGeneratingDhImage(true);
+    message.loading({ content: '🧑 AI 正在生成人物正脸图...', key: 'dh_face', duration: 0 });
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/agents/generate-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: `${desc}. Photorealistic portrait, single person, front-facing headshot, looking straight at camera, clear sharp facial features, neutral closed-mouth expression, even soft lighting, plain clean background, head and shoulders visible, ultra realistic.`,
+          ratio: '1:1',
+          model: 'nano-banana-pro',
+          platform: 'taobao',
+          product_name: 'digital_human_face',
+          image_type: 'main',
+          category: 'portrait',  // 纯文生图人像，绝不引入商品/包装/文字
+        }),
+
+      });
+      const data = await res.json();
+      if (data.code === 200 && data.data?.url) {
+        setDhImageFile(null);
+        setDhImageUrl(data.data.url);
+        message.success({ content: '✅ 人物正脸图生成完成！', key: 'dh_face' });
+      } else {
+        throw new Error(data.message || '生成失败');
+      }
+    } catch (err: any) {
+      message.error({ content: `人物图生成失败: ${err.message}`, key: 'dh_face' });
+    } finally {
+      setGeneratingDhImage(false);
+    }
+  };
+
+  // 🐾 AI 生成宠物正脸图（用于宠物口型迁移）
+  const handleGeneratePetFace = async () => {
+    const desc = petGenPrompt.trim() || '一只可爱的橘猫，正对镜头，表情呆萌';
+    setGeneratingPetImage(true);
+    message.loading({ content: '🐾 AI 正在生成宠物正脸图...', key: 'pet_face', duration: 0 });
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/agents/generate-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: `${desc}. Photorealistic, single pet, front-facing close-up headshot, looking straight at camera, clear sharp face with visible eyes nose and mouth, even soft lighting, plain clean background, ultra realistic.`,
+          ratio: '1:1',
+          model: 'nano-banana-pro',
+          platform: 'taobao',
+          product_name: 'pet_face',
+          image_type: 'main',
+          category: 'portrait',  // 纯文生图宠物正脸，绝不引入商品/包装/文字
+        }),
+
+      });
+      const data = await res.json();
+      if (data.code === 200 && data.data?.url) {
+        setPetImageFile(null);
+        setPetImageUrl(data.data.url);
+        message.success({ content: '✅ 宠物正脸图生成完成！', key: 'pet_face' });
+      } else {
+        throw new Error(data.message || '生成失败');
+      }
+    } catch (err: any) {
+      message.error({ content: `宠物图生成失败: ${err.message}`, key: 'pet_face' });
+    } finally {
+      setGeneratingPetImage(false);
+    }
+  };
+
+  // 🧑 数字人：人物图 + 音频 → SadTalker 对口型说话视频
+  const handleGenerateDigitalHuman = async () => {
+    if (!dhImageUrl && !dhImageFile) return message.warning('请先上传数字人的人物正脸图片！');
+
+    const audioSource = dhAudioFile ? null : (dhAudioUrl || voxCpm2Url);
+    if (!dhImageFile && !dhImageUrl) return;
+    if (!dhAudioFile && !audioSource) return message.warning('请先上传音频，或在上方用 VoxCPM2 生成口播语音！');
+    setGeneratingDh(true);
+    setDhProgress('正在提交 SadTalker 渲染任务...');
+    setDhVideoUrl('');
     try {
       const formData = new FormData();
-      const audioRes = await fetch(audioUrl);
-      formData.append('audio', await audioRes.blob(), 'voice.wav');
-      if (livePortraitSourceFile) {
-        formData.append('source', livePortraitSourceFile);
+      // 人物图 -> source_image
+      if (dhImageFile) {
+        formData.append('source_image', dhImageFile);
       } else {
-        const srcRes = await fetch(`${API_BASE}/api/v1/proxy/download?url=${encodeURIComponent(livePortraitSourceUrl)}`);
-        const ext = livePortraitSourceUrl.split('.').pop()?.toLowerCase() || 'jpg';
-        formData.append('source', await srcRes.blob(), `source.${ext}`);
+        const ext = dhImageUrl.split('.').pop()?.toLowerCase() || 'jpg';
+        formData.append('source_image', await _urlToBlob(dhImageUrl), `source.${ext}`);
       }
-      setLivePortraitProgress('LivePortrait 渲染中，GPU 加速约 30~120 秒...');
-      const res = await fetch(`${LIVEPORTRAIT_ENDPOINT}/generate`, { method: 'POST', body: formData });
-      if (!res.ok) throw new Error(`LivePortrait 服务异常 (HTTP ${res.status})`);
-      const contentType = res.headers.get('content-type') || '';
-      if (contentType.includes('application/json')) {
-        const data = await res.json();
-        if (data.video_url) {
-          setLivePortraitVideoUrl(data.video_url);
-          message.success('🐾 数字人视频生成完成！');
-        } else if (data.task_id) {
-          const taskId = data.task_id;
-          const poll = setInterval(async () => {
-            try {
-              const pollRes = await fetch(`${LIVEPORTRAIT_ENDPOINT}/tasks/${taskId}`);
-              if (!pollRes.ok) return;
-              const status = await pollRes.json();
-              setLivePortraitProgress(`渲染中... ${status.progress ?? ''}%`);
-              if (status.status === 'done' && status.video_url) {
-                clearInterval(poll);
-                setLivePortraitVideoUrl(status.video_url);
-                setGeneratingLivePortrait(false); setLivePortraitProgress('');
-                message.success('🐾 数字人视频生成完成！');
-              } else if (status.status === 'failed') { clearInterval(poll); throw new Error(status.error || '渲染失败'); }
-            } catch (e: any) { clearInterval(poll); setGeneratingLivePortrait(false); setLivePortraitProgress(''); message.error(`LivePortrait 失败: ${e.message}`); }
-          }, 5000);
-          return;
-        }
+      // 音频 -> driven_audio（优先用上传文件，否则用 VoxCPM2/上传URL）
+      if (dhAudioFile) {
+        formData.append('driven_audio', dhAudioFile);
       } else {
-        setLivePortraitVideoUrl(URL.createObjectURL(await res.blob()));
-        message.success('🐾 数字人视频生成完成！');
+        formData.append('driven_audio', await _urlToBlob(audioSource as string), 'audio.wav');
       }
-    } catch (err: any) { message.error(`LivePortrait 生成失败: ${err.message}`); }
-    finally { setGeneratingLivePortrait(false); setLivePortraitProgress(''); }
+      // full：保留肩部/半身背景，避免半身照被裁成只剩头部
+      formData.append('preprocess', 'full');
+      setDhProgress('SadTalker 对口型渲染中，GPU 加速约 30~90 秒（冷启动首次更久）...');
+      // 后端改为异步任务：先提交拿到 task_id，再轮询任务状态，避免长连接被中途断开导致结果丢失。
+      const res = await fetch(SADTALKER_TALK_ENDPOINT, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) throw new Error(`SadTalker 服务异常 (HTTP ${res.status})`);
+      const submit = await res.json();
+      if (submit.code !== 200 || !submit.data?.task_id) throw new Error(submit.message || '提交任务失败');
+
+      const url = await _pollSadtalkerTask(submit.data.task_id);
+      setDhVideoUrl(url);
+      message.success('🧑 数字人口型视频生成完成！');
+
+
+    } catch (err: any) { message.error(`数字人生成失败: ${err.message}`); }
+    finally { setGeneratingDh(false); setDhProgress(''); }
   };
+
+  // 🐾 宠物：宠物图 + 音频 + 真人驱动脸 → SadTalker→LivePortrait 宠物说话视频
+  const handleGeneratePetTalk = async () => {
+    if (!petImageUrl && !petImageFile) return message.warning('请先上传宠物正脸图片！');
+    const audioSource = petAudioFile ? null : (petAudioUrl || voxCpm2Url);
+    if (!petAudioFile && !audioSource) return message.warning('请先上传音频，或在上方用 VoxCPM2 生成口播语音！');
+    if (!petDriverUrl && !petDriverFile) return message.warning('请先上传一张真人正脸图片（用于生成口型驱动）！');
+    setGeneratingPet(true);
+    setPetProgress('正在提交宠物口型任务（SadTalker → LivePortrait 两段式）...');
+    setPetVideoUrl('');
+    try {
+      const formData = new FormData();
+      // 宠物图 -> pet_image
+      if (petImageFile) {
+        formData.append('pet_image', petImageFile);
+      } else {
+        const ext = petImageUrl.split('.').pop()?.toLowerCase() || 'jpg';
+        formData.append('pet_image', await _urlToBlob(petImageUrl), `pet.${ext}`);
+      }
+      // 音频 -> driven_audio
+      if (petAudioFile) {
+        formData.append('driven_audio', petAudioFile);
+      } else {
+        formData.append('driven_audio', await _urlToBlob(audioSource as string), 'audio.wav');
+      }
+      // 真人驱动脸 -> driver_face
+      if (petDriverFile) {
+        formData.append('driver_face', petDriverFile);
+      } else {
+        const ext = petDriverUrl.split('.').pop()?.toLowerCase() || 'jpg';
+        formData.append('driver_face', await _urlToBlob(petDriverUrl), `driver.${ext}`);
+      }
+      setPetProgress('宠物口型渲染中（两段式较慢，约 1~3 分钟，冷启动首次更久）...');
+      // 后端改为异步任务：先提交拿到 task_id，再轮询任务状态。
+      // 这样长时间的两段式渲染完全脱离浏览器连接，关页面/断网也不丢结果，
+      // 渲染完成后视频会稳定落进 R2 并由轮询拿到公网 URL。
+      const res = await fetch(SADTALKER_PETTALK_ENDPOINT, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) throw new Error(`宠物口型服务异常 (HTTP ${res.status})`);
+      const submit = await res.json();
+      if (submit.code !== 200 || !submit.data?.task_id) throw new Error(submit.message || '提交任务失败');
+
+      const url = await _pollSadtalkerTask(submit.data.task_id);
+      setPetVideoUrl(url);
+      message.success('🐾 宠物说话视频生成完成！');
+
+
+    } catch (err: any) { message.error(`宠物口型生成失败: ${err.message}`); }
+    finally { setGeneratingPet(false); setPetProgress(''); }
+  };
+
+
 
   // 🎭 VoxCPM2 合成（直连 Modal GPU 端点，返回 WAV 音频流）
   const handleGenerateVoxCpm2 = async () => {
@@ -1439,7 +1891,64 @@ export default function TaobaoPublish() {
     }
   };
 
+  // 🎭 选择参考文件（音频/视频）后：本地预览 + 自动识别参考音色文本
+  const handleCloneFileSelected = async (file: File) => {
+    const isVideo = file.type.startsWith('video') || /\.(mp4|mov|avi|mkv|webm|flv|m4v|wmv)$/i.test(file.name);
+    setCloneRefFile(file);
+    setCloneRefName(file.name);
+    setCloneRefIsVideo(isVideo);
+    setCloneRefAudioUrl(URL.createObjectURL(file));
+    setClonePromptText('');
+    setCloneVoiceUrl('');
+    setTranscribingClone(true);
+    message.loading({ content: isVideo ? '🎬 正在提取视频音轨并识别...' : '📝 正在识别参考音频文本...', key: 'clone_asr', duration: 0 });
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch(VOXCPM2_TRANSCRIBE_ENDPOINT, { method: 'POST', body: formData });
+      if (!res.ok) throw new Error(`识别服务异常 (HTTP ${res.status})`);
+      const data = await res.json();
+      setClonePromptText(data.text || '');
+      message.success({ content: data.text ? '✅ 参考音频识别完成，可在下方编辑校正' : '⚠️ 未识别到文本，请手动填写参考文案', key: 'clone_asr', duration: 3 });
+    } catch (err: any) {
+      message.error({ content: `识别失败：${err.message}，可手动填写参考文案`, key: 'clone_asr', duration: 4 });
+    } finally {
+      setTranscribingClone(false);
+    }
+  };
+
+  // 🎭 声音克隆：用参考音色朗读口播文案
+  const handleCloneVoice = async () => {
+    if (!cloneRefFile) return message.warning('请先上传参考音频或视频文件！');
+    if (!broadcastScript.trim()) return message.warning('请先提取或输入口播文案！');
+    setCloningVoice(true);
+    setCloneVoiceUrl('');
+    message.loading({ content: '🎭 声音克隆合成中，GPU 加速约15~40秒...', key: 'clone_gen', duration: 0 });
+    try {
+      const formData = new FormData();
+      formData.append('file', cloneRefFile);
+      const params = new URLSearchParams({
+        text: broadcastScript,
+        prompt_text: clonePromptText.trim(),
+        cfg_value: String(voxCpm2CfgValue),
+        timesteps: String(voxCpm2Timesteps),
+      });
+      const res = await fetch(`${VOXCPM2_CLONE_ENDPOINT}?${params.toString()}`, { method: 'POST', body: formData });
+      if (!res.ok) throw new Error(`克隆服务异常 (HTTP ${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      setCloneVoiceUrl(url);
+      setVoxCpm2Url(url); // 同步给数字人模块使用
+      message.success({ content: '🎉 声音克隆合成完成！', key: 'clone_gen' });
+    } catch (err: any) {
+      message.error({ content: `声音克隆失败: ${err.message}`, key: 'clone_gen' });
+    } finally {
+      setCloningVoice(false);
+    }
+  };
+
   // 🔊 (kept for compatibility — not shown in UI)
+
   const handleGenerateTts = async () => {
     if (!broadcastScript.trim()) return message.warning('请先提取或输入口播文案！');
     setGeneratingTts(true);
@@ -1496,8 +2005,81 @@ export default function TaobaoPublish() {
     }
   };
 
+  // 🧩 商品组合图生成：将选中的多张商品原图组合成同一张图，保证不变形、无文字
+  const handleGenerateCombo = async (targetModelId: string) => {
+    if (refImagesCombo.length < 2) return message.warning('请至少选择 2 张商品图片进行组合！');
+
+    setComboImageModel(targetModelId);
+    setGeneratingCombo(true);
+    setComboImages(Array(comboCount).fill(''));
+    abortControllers.current['combo'] = new AbortController();
+
+    const basePrompt = (comboPrompt || '').trim() ||
+      'clean professional studio product-combo photography, soft balanced lighting, simple seamless light-gray gradient background, realistic shadows and reflections';
+    const updatedImages = Array(comboCount).fill('');
+    let hasError = false;
+
+    try {
+      for (let i = 0; i < comboCount; i++) {
+        if (abortControllers.current['combo']?.signal.aborted) break;
+
+        let attempts = 0;
+        let success = false;
+        while (attempts < 3 && !success) {
+          if (abortControllers.current['combo']?.signal.aborted) break;
+          attempts++;
+          setComboRenderProgress(`生成第 ${i + 1}/${comboCount} 张组合图...${attempts > 1 ? ` (重试 ${attempts}/3)` : ''}`);
+          try {
+            const drawRes = await fetch(`${API_BASE}/api/v1/agents/generate-image`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              signal: abortControllers.current['combo']?.signal,
+              body: JSON.stringify({
+                prompt: `${basePrompt}. Arrange all the products together in one cohesive group shot. Each product keeps its exact original shape with zero deformation. Absolutely no added text, no captions, no watermarks.`,
+                ratio: comboRatio,
+                image_urls: refImagesCombo,
+                model: targetModelId,
+                platform: 'taobao',
+                product_name: selectedSkuName || 'taobao_product',
+                image_type: 'combo',
+                category: 'combo',
+              })
+            });
+            const drawData = await drawRes.json();
+            if (drawData.code === 200 && drawData.data?.url) {
+              updatedImages[i] = drawData.data.url;
+              setComboImages([...updatedImages]);
+              success = true;
+            } else if (attempts >= 3) {
+              hasError = true;
+            }
+          } catch (err: any) {
+            if (err.name === 'AbortError') { success = true; break; }
+            if (attempts >= 3) hasError = true;
+          }
+        }
+      }
+
+      if (abortControllers.current['combo']?.signal.aborted) {
+        message.warning('商品组合图生成已手动终止');
+      } else if (hasError) {
+        message.warning('组合图渲染结束，部分图片生成失败，可重试');
+      } else {
+        message.success('商品组合图渲染完毕！');
+      }
+    } catch (error: any) {
+      message.error(`组合图生成中断: ${error.message}`);
+    } finally {
+      setGeneratingCombo(false);
+      setComboImageModel('');
+      setComboRenderProgress('');
+      abortControllers.current['combo'] = null;
+    }
+  };
+
   return (
     <div className="h-full bg-gradient-to-br from-slate-50 to-orange-50/30 flex overflow-hidden text-[13px] text-gray-700 relative">
+
       <div className="flex-1 flex flex-col min-w-0 bg-white m-4 rounded-2xl shadow-md border border-orange-100/60 relative overflow-hidden">
         <div className="flex justify-between items-center px-8 border-b border-orange-100/40 bg-gradient-to-r from-white via-orange-50/20 to-white">
           <Tabs 
@@ -1624,6 +2206,18 @@ export default function TaobaoPublish() {
                     <span className="text-xs font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full">VoxCPM2</span>
                     <span className="text-xs text-gray-500">OpenBMB 出品 · 自然语言音色控制 · Modal GPU 加速</span>
                   </div>
+
+                  {/* 模式切换：音色设计 / 声音克隆 */}
+                  <div className="flex gap-2 mb-4">
+                    <button type="button" onClick={() => setTtsMode('design')}
+                      className={`text-xs px-3 py-1.5 rounded-lg border font-bold cursor-pointer transition-all ${ttsMode === 'design' ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-gray-500 border-gray-300 hover:border-purple-400'}`}
+                    >🎨 音色设计（描述音色）</button>
+                    <button type="button" onClick={() => setTtsMode('clone')}
+                      className={`text-xs px-3 py-1.5 rounded-lg border font-bold cursor-pointer transition-all ${ttsMode === 'clone' ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-gray-500 border-gray-300 hover:border-purple-400'}`}
+                    >🎙️ 声音克隆（上传音频/视频）</button>
+                  </div>
+
+                  {ttsMode === 'design' && (<>
                   <div className="mb-2 text-[11px] text-purple-600 bg-purple-50 px-2 py-1 rounded border border-purple-100">
                     💡 在文案开头用括号描述音色，例如：<code className="bg-purple-100 px-1 rounded">(声音甜美，语速稍快)</code> 你好呀！
                   </div>
@@ -1658,120 +2252,314 @@ export default function TaobaoPublish() {
                       </Button>
                     )}
                   </div>
+                  </>)}
+
+                  {ttsMode === 'clone' && (<>
+                  <div className="mb-3 text-[11px] text-purple-600 bg-purple-50 px-2 py-1.5 rounded border border-purple-100">
+                    🎙️ 上传一段<strong>参考音频或视频</strong>（建议 5~20 秒清晰人声），系统将自动复刻其音色来朗读上方口播文案。上传视频时会自动提取音轨并识别文本。
+                  </div>
+
+                  {/* 文件上传区 */}
+                  <div className="mb-3 flex gap-3 items-start">
+                    <Upload
+                      accept="audio/*,video/*"
+                      showUploadList={false}
+                      beforeUpload={(file) => { handleCloneFileSelected(file); return false; }}
+                    >
+                      <div className="w-28 h-24 border-2 border-dashed border-purple-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-purple-500 bg-white text-purple-400 transition-colors">
+                        <UploadOutlined className="text-xl mb-1" />
+                        <span className="text-[10px] font-bold text-center px-1">上传参考音频/视频</span>
+                      </div>
+                    </Upload>
+                    <div className="flex-1">
+                      {cloneRefName ? (
+                        <div className="text-xs text-gray-600 mb-1">
+                          <span className="font-bold text-purple-700">{cloneRefIsVideo ? '🎬 视频' : '🎵 音频'}：</span>{cloneRefName}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-gray-400 mb-1">支持 MP3/WAV/M4A 音频，或 MP4/MOV 视频（自动提取音轨）。</div>
+                      )}
+                      {cloneRefAudioUrl && !cloneRefIsVideo && (
+                        <audio src={cloneRefAudioUrl} controls className="w-full" style={{height:'32px'}} />
+                      )}
+                      {cloneRefAudioUrl && cloneRefIsVideo && (
+                        <video src={cloneRefAudioUrl} controls className="max-h-24 rounded" />
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 参考音频识别文本（可编辑） */}
+                  <div className="mb-3">
+                    <div className="text-[10px] text-purple-500 mb-1 font-medium flex items-center gap-2">
+                      参考音频文本（自动识别，可编辑校正以提升克隆质量）
+                      {transcribingClone && <span className="text-purple-400 flex items-center gap-1"><LoadingOutlined /> 识别中...</span>}
+                    </div>
+                    <Input.TextArea
+                      value={clonePromptText}
+                      onChange={e => setClonePromptText(e.target.value)}
+                      rows={2}
+                      size="small"
+                      className="text-xs"
+                      placeholder="上传参考文件后将自动识别其文字内容，也可手动填写或修正..."
+                    />
+                  </div>
+
+                  {/* 参数 + 克隆按钮 */}
+                  <div className="flex flex-wrap gap-3 items-center">
+                    <span className="text-xs font-medium text-gray-600">引导强度：</span>
+                    <Select value={voxCpm2CfgValue} onChange={setVoxCpm2CfgValue} size="small" className="w-28"
+                      options={[
+                        { value: 1.5, label: '1.5 自然' },
+                        { value: 2.0, label: '2.0 标准' },
+                        { value: 3.0, label: '3.0 强调' },
+                      ]} />
+                    <span className="text-xs font-medium text-gray-600">推理步数：</span>
+                    <Select value={voxCpm2Timesteps} onChange={setVoxCpm2Timesteps} size="small" className="w-28"
+                      options={[
+                        { value: 5,  label: '5 步 极速' },
+                        { value: 10, label: '10 步 标准' },
+                        { value: 20, label: '20 步 精细' },
+                      ]} />
+                    <Button type="primary" size="small"
+                      icon={cloningVoice ? <LoadingOutlined /> : <CustomerServiceOutlined />}
+                      onClick={handleCloneVoice}
+                      loading={cloningVoice}
+                      disabled={!cloneRefFile || !broadcastScript.trim() || transcribingClone}
+                      className="bg-purple-600 border-purple-600 font-bold">
+                      克隆音色并生成口播
+                    </Button>
+                    {cloneVoiceUrl && (
+                      <Button size="small" icon={<DownloadOutlined />}
+                        onClick={() => { const a = document.createElement('a'); a.href = cloneVoiceUrl; a.download = 'voxcpm2_clone.wav'; a.click(); }}
+                        className="text-purple-700 border-purple-300">
+                        下载 WAV
+                      </Button>
+                    )}
+                  </div>
+                  </>)}
+
                   {voxCpm2Url && (
                     <div className="mt-3 p-3 bg-white rounded-lg border border-purple-200 flex items-center gap-3">
                       <SoundOutlined className="text-purple-500 text-lg flex-shrink-0" />
                       <audio src={voxCpm2Url} controls className="flex-1" style={{height:'32px'}} />
-                      <span className="text-[10px] text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full flex-shrink-0">✅ VoxCPM2 · WAV</span>
+                      <span className="text-[10px] text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full flex-shrink-0">{ttsMode === 'clone' ? '✅ 声音克隆 · WAV' : '✅ VoxCPM2 · WAV'}</span>
                     </div>
                   )}
                 </div>
+
               </div>
 
-              {/* 🐾 数字人（宠物）生成区 — LivePortrait */}
+              {/* 🧑 数字人口型视频生成区 — SadTalker（音频驱动） */}
+              <div className="mb-8 p-5 border border-blue-200 rounded-lg bg-gradient-to-r from-blue-50 to-sky-50">
+                <div className="flex justify-between items-center mb-3">
+                  <span className="font-bold text-blue-800 flex items-center gap-2">
+                    <span className="text-xl">🧑</span>
+                    第三步 A：数字人口型视频（音频驱动）
+                    <span className="text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full">SadTalker · Modal GPU</span>
+                  </span>
+                </div>
+                <div className="text-xs text-blue-600 bg-blue-50 border border-blue-100 rounded p-2 mb-4">
+                  上传一张<strong>人物正脸图</strong> + 一段<strong>音频</strong>（可直接用上方 VoxCPM2 生成的口播语音），SadTalker 会让人物按音频<strong>对口型说话</strong>，并带自然的头部微动。
+                </div>
+                <div className="mb-4 flex gap-6 flex-wrap">
+                  {/* 人物图 */}
+                  <div>
+                    <div className="text-xs font-medium text-gray-600 mb-2">① 人物正脸图：</div>
+                    <div className="flex gap-3 items-start">
+                      <Upload accept="image/*" showUploadList={false} beforeUpload={(file) => { setDhImageFile(file); setDhImageUrl(URL.createObjectURL(file)); return false; }}>
+                        <div className="w-24 h-24 border-2 border-dashed border-blue-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 bg-white text-blue-400">
+                          <UploadOutlined className="text-xl mb-1" /><span className="text-[10px] font-bold text-center">上传人物图</span>
+                        </div>
+                      </Upload>
+                      {dhImageUrl && (
+                        <div className="relative w-24 h-24 border border-blue-200 rounded-lg overflow-hidden shadow-sm group">
+                          <img src={dhImageUrl} className="w-full h-full object-cover" />
+                          <div className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 flex items-center justify-center text-xs cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
+                            onClick={() => { setDhImageUrl(''); setDhImageFile(null); }}>×</div>
+                        </div>
+                      )}
+                    </div>
+                    {/* 没有现成照片？让 AI 直接生成一张正脸图 */}
+                    <div className="mt-2 flex gap-2 items-center" style={{ maxWidth: 320 }}>
+                      <Input size="small" value={dhGenPrompt} onChange={e => setDhGenPrompt(e.target.value)}
+                        placeholder="描述想要的人物，如：温柔知性的中年女性" className="text-xs" />
+                      <Button size="small" icon={generatingDhImage ? <LoadingOutlined /> : <RobotOutlined />}
+                        onClick={handleGenerateDhFace} loading={generatingDhImage}
+                        className="text-blue-600 border-blue-300 bg-blue-50 font-bold whitespace-nowrap">AI 生成</Button>
+                    </div>
+                  </div>
+                  {/* 音频 */}
+                  <div>
+                    <div className="text-xs font-medium text-gray-600 mb-2">② 音频（口型来源）：</div>
+                    <div className="flex gap-3 items-start">
+                      <Upload accept="audio/*" showUploadList={false} beforeUpload={(file) => { setDhAudioFile(file); setDhAudioUrl(URL.createObjectURL(file)); return false; }}>
+                        <div className="w-24 h-24 border-2 border-dashed border-blue-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 bg-white text-blue-400">
+                          <CustomerServiceOutlined className="text-xl mb-1" /><span className="text-[10px] font-bold text-center">上传音频</span>
+                        </div>
+                      </Upload>
+
+                      <div className="flex flex-col gap-1 self-center">
+                        {(dhAudioUrl || dhAudioFile) ? (
+                          <>
+                            <audio src={dhAudioUrl} controls className="w-44" style={{height:'32px'}} />
+                            <span className="text-[10px] text-blue-500 cursor-pointer" onClick={() => { setDhAudioUrl(''); setDhAudioFile(null); }}>清除已上传音频</span>
+                          </>
+                        ) : voxCpm2Url ? (
+                          <div className="text-[11px] text-green-600 bg-green-50 border border-green-100 rounded px-2 py-1">✅ 将使用上方 VoxCPM2 生成的语音<br/>（如需自定义可在此上传）</div>
+                        ) : (
+                          <div className="text-[11px] text-gray-400">未上传音频时，将自动使用上方 VoxCPM2 生成的口播语音。</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex-1 min-w-[160px] text-[11px] text-gray-400 self-center">人物图：JPG/PNG 正面清晰单张人脸。<br/>音频：wav/mp3/m4a，建议时长 5~60 秒。</div>
+                </div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <Button type="primary" icon={generatingDh ? <LoadingOutlined /> : <VideoCameraOutlined />}
+                    onClick={handleGenerateDigitalHuman} loading={generatingDh}
+                    disabled={(!dhImageUrl && !dhImageFile) || (!dhAudioFile && !dhAudioUrl && !voxCpm2Url)}
+                    className="bg-blue-600 border-blue-600 font-bold">
+                    生成数字人口型视频
+                  </Button>
+                  {generatingDh && <span className="text-blue-600 font-bold text-xs flex items-center gap-1"><Spin size="small" />{dhProgress}</span>}
+                  {dhVideoUrl && !generatingDh && (
+                    <Button size="small" icon={<DownloadOutlined />}
+                      onClick={() => { const a = document.createElement('a'); a.href = dhVideoUrl; a.download = 'digital_human_talk.mp4'; a.click(); }}
+                      className="text-blue-700 border-blue-300 bg-blue-50 font-bold">下载视频</Button>
+                  )}
+                </div>
+                {dhVideoUrl && (
+                  <div className="mt-4 p-3 bg-white rounded-lg border border-blue-200">
+                    <div className="text-xs font-bold text-blue-700 mb-2">🎬 数字人口型视频预览：</div>
+                    <video src={dhVideoUrl} controls className="w-full max-h-80 rounded-lg" />
+                  </div>
+                )}
+              </div>
+
+              {/* 🐾 宠物口型视频生成区 — SadTalker → LivePortrait（音频驱动两段式） */}
               <div className="mb-8 p-5 border border-pink-200 rounded-lg bg-gradient-to-r from-pink-50 to-rose-50">
                 <div className="flex justify-between items-center mb-3">
                   <span className="font-bold text-pink-800 flex items-center gap-2">
                     <span className="text-xl">🐾</span>
-                    第三步：数字人（宠物）视频生成
-                    <span className="text-[10px] bg-pink-100 text-pink-600 px-2 py-0.5 rounded-full">LivePortrait · Modal GPU</span>
+                    第三步 B：宠物口型视频（音频驱动）
+                    <span className="text-[10px] bg-pink-100 text-pink-600 px-2 py-0.5 rounded-full">SadTalker → LivePortrait · Modal GPU</span>
                   </span>
                 </div>
                 <div className="text-xs text-pink-600 bg-pink-50 border border-pink-100 rounded p-2 mb-4">
-                  上传人物/宠物参考图片或视频，结合上方生成的口播语音，自动驱动嘴型与表情，生成数字人口播视频。
+                  上传<strong>宠物正脸图</strong> + 一段<strong>音频</strong> + 一张<strong>真人正脸图</strong>。系统先用真人脸+音频生成对口型说话视频，再把口型/表情动作迁移到宠物，得到<strong>宠物按音频说话</strong>的视频。两段式渲染较慢（约 1~3 分钟）。
                 </div>
-                <div className="mb-4">
-                  <div className="text-xs font-medium text-gray-600 mb-2">驱动音频来源：</div>
-                  <div className="flex gap-2">
-                    <button type="button" onClick={() => setLivePortraitAudioMode('tts')}
-                      className={`text-xs px-3 py-1.5 rounded border font-bold cursor-pointer transition-all ${livePortraitAudioMode === 'tts' ? 'bg-pink-600 text-white border-pink-600' : 'bg-white text-gray-500 border-gray-300 hover:border-pink-400'}`}>
-                      🎙 使用上方 VoxCPM2 语音{voxCpm2Url ? ' ✅' : ' (未生成)'}
-                    </button>
-                    <button type="button" onClick={() => setLivePortraitAudioMode('custom')}
-                      className={`text-xs px-3 py-1.5 rounded border font-bold cursor-pointer transition-all ${livePortraitAudioMode === 'custom' ? 'bg-pink-600 text-white border-pink-600' : 'bg-white text-gray-500 border-gray-300 hover:border-pink-400'}`}>
-                      📁 上传自定义音频
-                    </button>
-                  </div>
-                  {livePortraitAudioMode === 'custom' && (
-                    <div className="mt-2">
-                      <Upload accept="audio/*" showUploadList={false} beforeUpload={(file) => { setLivePortraitCustomAudioFile(file); setLivePortraitCustomAudioUrl(URL.createObjectURL(file)); return false; }}>
-                        <Button size="small" icon={<UploadOutlined />} className="text-pink-600 border-pink-300">
-                          {livePortraitCustomAudioFile ? `已选：${livePortraitCustomAudioFile.name}` : '选择音频文件'}
-                        </Button>
+                <div className="mb-4 flex gap-6 flex-wrap">
+                  {/* 宠物图 */}
+                  <div>
+                    <div className="text-xs font-medium text-gray-600 mb-2">① 宠物正脸图：</div>
+                    <div className="flex gap-3 items-start">
+                      <Upload accept="image/*" showUploadList={false} beforeUpload={(file) => { setPetImageFile(file); setPetImageUrl(URL.createObjectURL(file)); return false; }}>
+                        <div className="w-24 h-24 border-2 border-dashed border-pink-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-pink-500 bg-white text-pink-400">
+                          <UploadOutlined className="text-xl mb-1" /><span className="text-[10px] font-bold text-center">上传宠物图</span>
+                        </div>
                       </Upload>
-                      {livePortraitCustomAudioUrl && <audio src={livePortraitCustomAudioUrl} controls className="mt-2 w-full" style={{height:'32px'}} />}
+                      {petImageUrl && (
+                        <div className="relative w-24 h-24 border border-pink-200 rounded-lg overflow-hidden shadow-sm group">
+                          <img src={petImageUrl} className="w-full h-full object-cover" />
+                          <div className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 flex items-center justify-center text-xs cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
+                            onClick={() => { setPetImageUrl(''); setPetImageFile(null); }}>×</div>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-                <div className="mb-4">
-                  <div className="text-xs font-medium text-gray-600 mb-2">数字人参考图片 / 视频：</div>
-                  <div className="flex gap-3 items-start">
-                    <Upload accept="image/*,video/*" showUploadList={false} beforeUpload={(file) => { setLivePortraitSourceFile(file); setLivePortraitSourceUrl(URL.createObjectURL(file)); return false; }}>
-                      <div className="w-24 h-24 border-2 border-dashed border-pink-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-pink-500 bg-white text-pink-400">
-                        <UploadOutlined className="text-xl mb-1" /><span className="text-[10px] font-bold text-center">上传参考图/视频</span>
-                      </div>
-                    </Upload>
-                    {livePortraitSourceUrl && (
-                      <div className="relative w-24 h-24 border border-pink-200 rounded-lg overflow-hidden shadow-sm group">
-                        {livePortraitSourceFile?.type.startsWith('video') ? <video src={livePortraitSourceUrl} className="w-full h-full object-cover" /> : <img src={livePortraitSourceUrl} className="w-full h-full object-cover" />}
-                        <div className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 flex items-center justify-center text-xs cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
-                          onClick={() => { setLivePortraitSourceUrl(''); setLivePortraitSourceFile(null); }}>×</div>
-                      </div>
-                    )}
-                    <div className="flex-1 text-[11px] text-gray-400 self-center">支持 JPG/PNG 人物或宠物图片，或 MP4/MOV 短视频。<br/>建议使用正面清晰的面部图，效果更佳。</div>
+                    {/* 没有现成宠物照片？让 AI 直接生成一张正脸图 */}
+                    <div className="mt-2 flex gap-2 items-center" style={{ maxWidth: 320 }}>
+                      <Input size="small" value={petGenPrompt} onChange={e => setPetGenPrompt(e.target.value)}
+                        placeholder="描述想要的宠物，如：可爱的柯基犬" className="text-xs" />
+                      <Button size="small" icon={generatingPetImage ? <LoadingOutlined /> : <RobotOutlined />}
+                        onClick={handleGeneratePetFace} loading={generatingPetImage}
+                        className="text-pink-600 border-pink-300 bg-pink-50 font-bold whitespace-nowrap">AI 生成</Button>
+                    </div>
                   </div>
+                  {/* 音频 */}
+                  <div>
+                    <div className="text-xs font-medium text-gray-600 mb-2">② 音频（口型来源）：</div>
+                    <div className="flex gap-3 items-start">
+                      <Upload accept="audio/*" showUploadList={false} beforeUpload={(file) => { setPetAudioFile(file); setPetAudioUrl(URL.createObjectURL(file)); return false; }}>
+
+                        <div className="w-24 h-24 border-2 border-dashed border-pink-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-pink-500 bg-white text-pink-400">
+                          <CustomerServiceOutlined className="text-xl mb-1" /><span className="text-[10px] font-bold text-center">上传音频</span>
+                        </div>
+                      </Upload>
+                      <div className="flex flex-col gap-1 self-center">
+                        {(petAudioUrl || petAudioFile) ? (
+                          <>
+                            <audio src={petAudioUrl} controls className="w-44" style={{height:'32px'}} />
+                            <span className="text-[10px] text-pink-500 cursor-pointer" onClick={() => { setPetAudioUrl(''); setPetAudioFile(null); }}>清除已上传音频</span>
+                          </>
+                        ) : voxCpm2Url ? (
+                          <div className="text-[11px] text-green-600 bg-green-50 border border-green-100 rounded px-2 py-1">✅ 将使用上方 VoxCPM2 生成的语音</div>
+                        ) : (
+                          <div className="text-[11px] text-gray-400">未上传时自动使用上方 VoxCPM2 语音。</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  {/* 真人驱动脸 */}
+                  <div>
+                    <div className="text-xs font-medium text-gray-600 mb-2">③ 真人正脸图（口型驱动源）：</div>
+                    <div className="flex gap-3 items-start">
+                      <Upload accept="image/*" showUploadList={false} beforeUpload={(file) => { setPetDriverFile(file); setPetDriverUrl(URL.createObjectURL(file)); return false; }}>
+                        <div className="w-24 h-24 border-2 border-dashed border-pink-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-pink-500 bg-white text-pink-400">
+                          <UploadOutlined className="text-xl mb-1" /><span className="text-[10px] font-bold text-center">上传真人脸</span>
+                        </div>
+                      </Upload>
+                      {petDriverUrl && (
+                        <div className="relative w-24 h-24 border border-pink-200 rounded-lg overflow-hidden shadow-sm group">
+                          <img src={petDriverUrl} className="w-full h-full object-cover" />
+                          <div className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 flex items-center justify-center text-xs cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
+                            onClick={() => { setPetDriverUrl(''); setPetDriverFile(null); }}>×</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex-1 min-w-[160px] text-[11px] text-gray-400 self-center">宠物图：正面清晰宠物脸。<br/>真人脸：清晰正脸，用于生成口型驱动视频，越接近正面效果越好。</div>
                 </div>
                 <div className="flex items-center gap-3 flex-wrap">
-                  <Button type="primary" icon={generatingLivePortrait ? <LoadingOutlined /> : <VideoCameraOutlined />}
-                    onClick={handleGenerateLivePortrait} loading={generatingLivePortrait}
-                    disabled={(!livePortraitSourceUrl && !livePortraitSourceFile) || (livePortraitAudioMode === 'tts' ? !voxCpm2Url : !livePortraitCustomAudioUrl)}
+                  <Button type="primary" icon={generatingPet ? <LoadingOutlined /> : <VideoCameraOutlined />}
+                    onClick={handleGeneratePetTalk} loading={generatingPet}
+                    disabled={(!petImageUrl && !petImageFile) || (!petAudioFile && !petAudioUrl && !voxCpm2Url) || (!petDriverUrl && !petDriverFile)}
                     className="bg-pink-600 border-pink-600 font-bold">
-                    生成数字人视频
+                    生成宠物口型视频
                   </Button>
-                  {generatingLivePortrait && <span className="text-pink-600 font-bold text-xs flex items-center gap-1"><Spin size="small" />{livePortraitProgress}</span>}
-                  {livePortraitVideoUrl && !generatingLivePortrait && (
+                  {generatingPet && <span className="text-pink-600 font-bold text-xs flex items-center gap-1"><Spin size="small" />{petProgress}</span>}
+                  {petVideoUrl && !generatingPet && (
                     <Button size="small" icon={<DownloadOutlined />}
-                      onClick={() => { const a = document.createElement('a'); a.href = livePortraitVideoUrl; a.download = 'liveportrait_avatar.mp4'; a.click(); }}
+                      onClick={() => { const a = document.createElement('a'); a.href = petVideoUrl; a.download = 'pet_talk.mp4'; a.click(); }}
                       className="text-pink-700 border-pink-300 bg-pink-50 font-bold">下载视频</Button>
                   )}
                 </div>
-                {livePortraitVideoUrl && (
+                {petVideoUrl && (
                   <div className="mt-4 p-3 bg-white rounded-lg border border-pink-200">
-                    <div className="text-xs font-bold text-pink-700 mb-2">🎬 数字人视频预览：</div>
-                    <video src={livePortraitVideoUrl} controls className="w-full max-h-80 rounded-lg" />
+                    <div className="text-xs font-bold text-pink-700 mb-2">🎬 宠物口型视频预览：</div>
+                    <video src={petVideoUrl} controls className="w-full max-h-80 rounded-lg" />
                   </div>
                 )}
               </div>
+
 
               <h2 className="text-xl font-black text-gray-800 mb-6 flex items-center"><span className="w-1.5 h-5 bg-blue-500 rounded-sm mr-2"></span>图文描述</h2>
 
               <Form.Item label={<span className="font-bold text-gray-700 block">主图素材</span>} className="mb-8">
                 <div className="flex flex-col">
-                  
-                  <div className="mb-4 flex flex-col gap-2">
-                    <div className="text-sm font-medium text-gray-700">主图参考素材 ({selectedR2Images.length} 张)</div>
+
+                  {/* 1:1 主图参考图选择 */}
+                  <div className="mb-3 flex flex-col gap-1">
+                    <div className="text-xs font-medium text-gray-500">1:1 主图参考素材 ({refImages11.length} 张)</div>
                     <div className="flex gap-2 flex-wrap">
-                      {selectedR2Images.map((img, idx) => (
-                        <div key={idx} className="relative w-[60px] h-[60px] border border-gray-200 rounded-lg overflow-hidden group shadow-sm">
+                      {refImages11.map((img, idx) => (
+                        <div key={idx} className="relative w-[50px] h-[50px] border border-gray-200 rounded-lg overflow-hidden group shadow-sm">
                           <img src={img} className="w-full h-full object-cover" />
-                          <div 
-                            className="absolute top-0 right-0 bg-red-500 text-white w-4 h-4 flex items-center justify-center text-[10px] cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleR2ImageSelection(img);
-                            }}
-                            title="删除"
-                          >
-                            ×
-                          </div>
+                          <div className="absolute top-0 right-0 bg-red-500 text-white w-4 h-4 flex items-center justify-center text-[10px] cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
+                            onClick={() => setRefImages11(prev => prev.filter(u => u !== img))}>×</div>
                         </div>
                       ))}
-                      <div 
-                        onClick={() => openR2Modal('global')}
-                        className="w-[60px] h-[60px] border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 bg-white text-gray-400 hover:text-blue-500 transition-colors"
-                      >
-                        <CloudOutlined className="text-xl mb-1" />
-                        <span className="text-[10px] font-bold">选择图片</span>
+                      <div onClick={() => openR2Modal('main11')} className="w-[50px] h-[50px] border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 bg-white text-gray-400 hover:text-blue-500 transition-colors">
+                        <CloudOutlined className="text-lg mb-0.5" /><span className="text-[9px] font-bold">选图</span>
                       </div>
                     </div>
                   </div>
@@ -1799,6 +2587,23 @@ export default function TaobaoPublish() {
                         ))}
                       </div>
                     </Image.PreviewGroup>
+                  </div>
+
+                  {/* 3:4 主图参考图选择 */}
+                  <div className="mb-3 flex flex-col gap-1">
+                    <div className="text-xs font-medium text-gray-500">3:4 主图参考素材 ({refImages34.length} 张)</div>
+                    <div className="flex gap-2 flex-wrap">
+                      {refImages34.map((img, idx) => (
+                        <div key={idx} className="relative w-[50px] h-[50px] border border-gray-200 rounded-lg overflow-hidden group shadow-sm">
+                          <img src={img} className="w-full h-full object-cover" />
+                          <div className="absolute top-0 right-0 bg-red-500 text-white w-4 h-4 flex items-center justify-center text-[10px] cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
+                            onClick={() => setRefImages34(prev => prev.filter(u => u !== img))}>×</div>
+                        </div>
+                      ))}
+                      <div onClick={() => openR2Modal('main34')} className="w-[50px] h-[50px] border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 bg-white text-gray-400 hover:text-blue-500 transition-colors">
+                        <CloudOutlined className="text-lg mb-0.5" /><span className="text-[9px] font-bold">选图</span>
+                      </div>
+                    </div>
                   </div>
 
                   <div className="flex flex-col gap-4">
@@ -1829,8 +2634,110 @@ export default function TaobaoPublish() {
                 </div>
               </Form.Item>
 
+              {/* ── 🧩 商品组合图生图 ── */}
+              <Form.Item label={<span className="font-bold text-gray-700 block">商品组合图</span>} className="mb-8">
+                <div className="flex flex-col">
+                  <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-lg text-xs text-emerald-700 mb-4">
+                    🧩 <strong>商品组合图：</strong>上传/选择 2 张以上不同商品图片，AI 自动将它们组合到同一张图中。保证每件商品<strong>形状不变形</strong>、画面<strong>无任何文字</strong>，适合套餐/组合/搭配售卖场景。
+                  </div>
+
+                  {/* 组合商品参考图选择 */}
+                  <div className="mb-4 flex flex-col gap-2">
+                    <div className="text-sm font-medium text-gray-700">组合商品原图 ({refImagesCombo.length} 张，至少 2 张)</div>
+                    <div className="flex gap-2 flex-wrap">
+                      {refImagesCombo.map((img, idx) => (
+                        <div key={idx} className="relative w-[60px] h-[60px] border border-gray-200 rounded-lg overflow-hidden group shadow-sm">
+                          <img src={img} className="w-full h-full object-cover" />
+                          <span className="absolute bottom-0 left-0 bg-emerald-600/80 text-white text-[9px] px-1 rounded-tr">{idx + 1}</span>
+                          <div className="absolute top-0 right-0 bg-red-500 text-white w-4 h-4 flex items-center justify-center text-[10px] cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
+                            onClick={() => setRefImagesCombo(prev => prev.filter(u => u !== img))} title="删除">×</div>
+                        </div>
+                      ))}
+                      <div onClick={() => openR2Modal('combo')} className="w-[60px] h-[60px] border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-emerald-500 bg-white text-gray-400 hover:text-emerald-500 transition-colors">
+                        <CloudOutlined className="text-xl mb-1" /><span className="text-[10px] font-bold">选择图片</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 配置 + 生成栏 */}
+                  <div className="flex flex-col gap-3 mb-6 bg-gray-50 p-4 border border-gray-100 rounded-lg">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className="text-xs text-gray-600 font-medium">画面比例：</span>
+                      {(['1:1', '3:4', '4:3', '16:9'] as const).map(r => (
+                        <button type="button" key={r} onClick={() => setComboRatio(r)}
+                          className={`text-xs px-2 py-1 rounded border font-bold cursor-pointer transition-all ${comboRatio === r ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-white text-gray-500 border-gray-300 hover:border-emerald-400'}`}>
+                          {r}
+                        </button>
+                      ))}
+                      <span className="text-xs text-gray-600 font-medium ml-2">生成数量：</span>
+                      <Input type="number" min={1} max={6} value={comboCount}
+                        onChange={(e) => setComboCount(Math.min(6, Math.max(1, Number(e.target.value) || 1)))}
+                        className="w-16" size="small" />
+                    </div>
+                    <Input
+                      value={comboPrompt}
+                      onChange={e => setComboPrompt(e.target.value)}
+                      placeholder="可选：补充组合场景/背景描述（如：浅灰渐变背景、原木桌面摆台等），留空则使用默认干净影棚背景"
+                      size="small"
+                      className="rounded"
+                    />
+                    <div className="flex flex-wrap gap-3 items-center">
+                      {RENDER_MODELS.map((model) => (
+                        <Button
+                          key={model.id}
+                          size="small"
+                          type={comboImageModel === model.id ? 'primary' : 'default'}
+                          className={comboImageModel === model.id ? 'bg-emerald-600 font-bold' : 'text-gray-600'}
+                          onClick={() => handleGenerateCombo(model.id)}
+                          loading={comboImageModel === model.id}
+                          disabled={generatingCombo && comboImageModel !== model.id}
+                        >
+                          {model.label.split(' ')[0]}
+                        </Button>
+                      ))}
+                      {generatingCombo && (
+                        <span className="ml-2 text-emerald-600 font-bold text-xs self-center flex items-center">
+                          <Spin size="small" className="mr-2" />{comboRenderProgress}
+                          <Button type="text" danger size="small" icon={<CloseCircleOutlined />} className="ml-2 py-0" onClick={() => stopGeneration('combo')} title="停止生成" />
+                        </span>
+                      )}
+                      {comboImages.some(img => img !== '') && (
+                        <Button size="small" type="primary" icon={<DownloadOutlined />}
+                          onClick={() => handleDownloadZip(comboImages, 'taobao_combo_images')}
+                          loading={downloading}
+                          className="bg-green-600 font-bold ml-auto">
+                          一键打包下载
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  <Image.PreviewGroup>
+                    <div className="grid grid-cols-3 gap-4">
+                      {comboImages.map((imgUrl, i) => {
+                        const aspectClass = comboRatio === '1:1' ? 'aspect-square' : comboRatio === '3:4' ? 'aspect-[3/4]' : comboRatio === '4:3' ? 'aspect-[4/3]' : 'aspect-video';
+                        return (
+                          <div key={i} className={`${aspectClass} border border-gray-200 rounded-lg flex items-center justify-center bg-gray-50 relative overflow-hidden shadow-sm`}>
+                            {imgUrl ? (
+                              <Image src={imgUrl} className="w-full h-full object-cover" alt={`组合图${i+1}`} style={{ objectFit: 'cover', width: '100%', height: '100%' }} />
+                            ) : (
+                              <div className="flex flex-col items-center opacity-40">
+                                <PictureOutlined className="text-2xl mb-2" />
+                                <span className="text-[10px] font-medium">组合图 {i+1}</span>
+                              </div>
+                            )}
+                            <span className="absolute top-1 left-1 bg-black/50 text-white text-[9px] px-1 rounded z-10 pointer-events-none">{i+1}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </Image.PreviewGroup>
+                </div>
+              </Form.Item>
+
               {/* ── 淘宝 5 大视频分类 ── */}
               <Form.Item label={<span className="font-bold text-gray-700 block">商品视频</span>} className="mb-12">
+
                 <div className="flex flex-col gap-4">
 
                   {/* 淘宝上传要求提示 */}
@@ -1973,17 +2880,22 @@ export default function TaobaoPublish() {
                           <div className="border border-orange-100 rounded-lg mb-3 overflow-hidden">
                             <div className="bg-gradient-to-r from-orange-500 to-red-500 px-3 py-1.5 flex items-center justify-between">
                               <span className="text-white font-bold text-xs">📋 {cat.label} · {catScripts[cat.id]!.storyboard.length} 个分镜 · {catRatios[cat.id]}</span>
-                              <span className="text-orange-100 text-[10px]" title={catScripts[cat.id]!.global_style_prompt}>{catScripts[cat.id]!.global_style_prompt.slice(0, 60)}...</span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-orange-100 text-[10px] hidden md:inline-block" title={catScripts[cat.id]!.global_style_prompt}>{catScripts[cat.id]!.global_style_prompt.slice(0, 60)}...</span>
+                                <Button size="small" icon={<DownloadOutlined />} onClick={() => handleDownloadCsv(catScripts[cat.id], `taobao_${cat.id}_script`)} className="text-[10px] h-6 bg-white/20 text-white border-white/30 hover:bg-white/30 hover:text-white">下载CSV</Button>
+                              </div>
                             </div>
                             <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
                               <table className="w-full text-[10px] text-left">
                                 <thead className="bg-orange-50 text-gray-600 font-bold border-b border-orange-100 sticky top-0 z-10 shadow-sm">
                                   <tr>
                                     <th className="px-2 py-2 w-12 text-center">镜号</th>
-                                    <th className="px-2 py-2 w-20">时间/景别</th>
-                                    <th className="px-2 py-2">画面描述</th>
-                                    <th className="px-2 py-2 w-[250px]">AI Prompt</th>
-                                    <th className="px-2 py-2 w-20">参考图</th>
+                                    <th className="px-2 py-2 w-16">时间(秒)</th>
+                                    <th className="px-2 py-2 w-24">景别&运镜</th>
+                                    <th className="px-2 py-2">画面具象描述</th>
+                                    <th className="px-2 py-2 w-[200px]">英文AI视频提示词</th>
+                                    <th className="px-2 py-2 w-20">音频/转场</th>
+                                    <th className="px-2 py-2 w-20">参考图(I2V)</th>
                                     <th className="px-2 py-2 w-32">渲染结果</th>
                                     <th className="px-2 py-2 w-[120px] text-center">操作</th>
                                   </tr>
@@ -1992,49 +2904,20 @@ export default function TaobaoPublish() {
                                   {catScripts[cat.id]!.storyboard.map((shot, idx) => (
                                     <tr key={idx} className="hover:bg-gray-50 align-top group">
                                       <td className="px-2 py-3 text-center">
-                                        <span className="w-5 h-5 mx-auto bg-orange-100 text-orange-700 rounded-full flex items-center justify-center text-[10px] font-bold border border-orange-200">{idx+1}</span>
+                                        <span className="w-5 h-5 mx-auto bg-orange-100 text-orange-700 rounded-full flex items-center justify-center text-[10px] font-bold border border-orange-200">{shot.shot_number || (idx+1).toString().padStart(2, '0')}</span>
                                       </td>
-                                      <td className="px-2 py-3">
-                                        <div className="w-16 h-16 border-2 border-dashed border-gray-300 rounded overflow-hidden flex flex-col items-center justify-center bg-gray-50 relative group/img">
-                                          {shot.reference_image ? (
-                                            <><img src={shot.reference_image} className="w-full h-full object-cover" />
-                                            <div className="absolute inset-0 bg-black/40 flex flex-col items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity">
-                                              <Button size="small" type="text" className="text-white" onClick={() => {
-                                                  const newScripts = {...catScripts};
-                                                  newScripts[cat.id]!.storyboard[idx].reference_image = undefined;
-                                                  setCatScripts(newScripts);
-                                              }}>删除</Button>
-                                            </div>
-                                            </>
-                                          ) : (
-                                            <Upload accept="image/*" showUploadList={false} customRequest={async (options: any) => {
-                                                const { file, onSuccess, onError } = options;
-                                                const formData = new FormData();
-                                                formData.append('file', file);
-                                                try {
-                                                  const res = await fetch(`${API_BASE}/api/v1/r2/upload`, { method: 'POST', body: formData });
-                                                  const data = await res.json();
-                                                  if (data.code === 200) {
-                                                    const newScripts = {...catScripts};
-                                                    newScripts[cat.id]!.storyboard[idx].reference_image = data.data.url;
-                                                    setCatScripts(newScripts);
-                                                    onSuccess(data, file);
-                                                  } else throw new Error(data.message);
-                                                } catch(e) { onError(e); }
-                                            }}>
-                                                <div className="w-16 h-16 flex flex-col items-center justify-center cursor-pointer hover:text-blue-500 text-gray-400">
-                                                    <PlusOutlined className="text-xs mb-1"/>
-                                                    <span className="text-[8px]">上传垫图</span>
-                                                </div>
-                                            </Upload>
-                                          )}
-                                        </div>
-                                      </td>
+                                      <td className="px-2 py-3 text-gray-500">{shot.time}</td>
+                                      <td className="px-2 py-3 font-medium text-gray-700">{shot.shot_and_camera}</td>
+                                      <td className="px-2 py-3 text-gray-600">{shot.logic}</td>
                                       <td className="px-2 py-3">
                                         <div className="text-[10px] text-gray-400 break-words leading-relaxed p-1.5 bg-gray-50 rounded border border-gray-100 relative">
                                           {shot.scene_prompt}
                                           <Button size="small" type="text" className="absolute top-0.5 right-0.5 h-5 px-1 text-sky-500 hover:bg-sky-50" onClick={() => handleSearchStock(shot.scene_prompt.split(',')[0].trim())} title="搜素材"><PictureOutlined /></Button>
                                         </div>
+                                      </td>
+                                      <td className="px-2 py-3">
+                                        <div className="text-[10px] text-gray-500">{shot.audio}</div>
+                                        <div className="text-[10px] text-gray-400 mt-1">{shot.transition}</div>
                                       </td>
                                       <td className="px-2 py-3">
                                         <div className="w-16 h-16 border-2 border-dashed border-gray-300 rounded overflow-hidden flex flex-col items-center justify-center bg-gray-50 relative group/img">
@@ -2252,29 +3135,17 @@ export default function TaobaoPublish() {
                 <div className="flex flex-col">
                   
                   <div className="mb-4 flex flex-col gap-2">
-                    <div className="text-sm font-medium text-gray-700">白底图参考素材 ({selectedR2Images.length})</div>
+                    <div className="text-sm font-medium text-gray-700">白底图参考素材 ({refImagesWhiteBg.length})</div>
                     <div className="flex gap-2 flex-wrap">
-                      {selectedR2Images.map((img, idx) => (
+                      {refImagesWhiteBg.map((img, idx) => (
                         <div key={idx} className="relative w-[60px] h-[60px] border border-gray-200 rounded-lg overflow-hidden group shadow-sm">
                           <img src={img} className="w-full h-full object-cover" />
-                          <div 
-                            className="absolute top-0 right-0 bg-red-500 text-white w-4 h-4 flex items-center justify-center text-[10px] cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleR2ImageSelection(img);
-                            }}
-                            title="删除"
-                          >
-                            ×
-                          </div>
+                          <div className="absolute top-0 right-0 bg-red-500 text-white w-4 h-4 flex items-center justify-center text-[10px] cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
+                            onClick={() => setRefImagesWhiteBg(prev => prev.filter(u => u !== img))} title="删除">×</div>
                         </div>
                       ))}
-                      <div 
-                        onClick={() => openR2Modal('global')}
-                        className="w-[60px] h-[60px] border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 bg-white text-gray-400 hover:text-blue-500 transition-colors"
-                      >
-                        <CloudOutlined className="text-xl mb-1" />
-                        <span className="text-[10px] font-bold">选择图片</span>
+                      <div onClick={() => openR2Modal('whitebg')} className="w-[60px] h-[60px] border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 bg-white text-gray-400 hover:text-blue-500 transition-colors">
+                        <CloudOutlined className="text-xl mb-1" /><span className="text-[10px] font-bold">选择图片</span>
                       </div>
                     </div>
                   </div>
@@ -2340,29 +3211,17 @@ export default function TaobaoPublish() {
                   
                   <div className="p-3 border-b border-gray-200">
                     <div className="mb-2 flex flex-col gap-2">
-                      <div className="text-sm font-medium text-gray-700">详情页参考素材 ({selectedR2Images.length})</div>
+                      <div className="text-sm font-medium text-gray-700">详情页参考素材 ({refImagesDetail.length})</div>
                       <div className="flex gap-2 flex-wrap">
-                        {selectedR2Images.map((img, idx) => (
+                        {refImagesDetail.map((img, idx) => (
                           <div key={idx} className="relative w-[60px] h-[60px] border border-gray-200 rounded-lg overflow-hidden group shadow-sm">
                             <img src={img} className="w-full h-full object-cover" />
-                            <div 
-                              className="absolute top-0 right-0 bg-red-500 text-white w-4 h-4 flex items-center justify-center text-[10px] cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                toggleR2ImageSelection(img);
-                              }}
-                              title="删除"
-                            >
-                              ×
-                            </div>
+                            <div className="absolute top-0 right-0 bg-red-500 text-white w-4 h-4 flex items-center justify-center text-[10px] cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
+                              onClick={() => setRefImagesDetail(prev => prev.filter(u => u !== img))} title="删除">×</div>
                           </div>
                         ))}
-                        <div 
-                          onClick={() => openR2Modal('global')}
-                          className="w-[60px] h-[60px] border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 bg-white text-gray-400 hover:text-blue-500 transition-colors"
-                        >
-                          <CloudOutlined className="text-xl mb-1" />
-                          <span className="text-[10px] font-bold">选择图片</span>
+                        <div onClick={() => openR2Modal('detail')} className="w-[60px] h-[60px] border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 bg-white text-gray-400 hover:text-blue-500 transition-colors">
+                          <CloudOutlined className="text-xl mb-1" /><span className="text-[10px] font-bold">选择图片</span>
                         </div>
                       </div>
                     </div>
@@ -2504,6 +3363,21 @@ export default function TaobaoPublish() {
 
               <Form.Item label={<span className="font-bold text-gray-700 block">SKU规格图</span>} className="mb-8">
                 <div className="flex flex-col">
+                  <div className="mb-3 flex flex-col gap-1">
+                    <div className="text-xs font-medium text-gray-500">SKU图参考素材 ({refImagesSku.length} 张)</div>
+                    <div className="flex gap-2 flex-wrap">
+                      {refImagesSku.map((img, idx) => (
+                        <div key={idx} className="relative w-[50px] h-[50px] border border-gray-200 rounded-lg overflow-hidden group shadow-sm">
+                          <img src={img} className="w-full h-full object-cover" />
+                          <div className="absolute top-0 right-0 bg-red-500 text-white w-4 h-4 flex items-center justify-center text-[10px] cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
+                            onClick={() => setRefImagesSku(prev => prev.filter(u => u !== img))}>×</div>
+                        </div>
+                      ))}
+                      <div onClick={() => openR2Modal('sku')} className="w-[50px] h-[50px] border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 bg-white text-gray-400 hover:text-blue-500 transition-colors">
+                        <CloudOutlined className="text-lg mb-0.5" /><span className="text-[9px] font-bold">选图</span>
+                      </div>
+                    </div>
+                  </div>
                   <div className="flex justify-between items-center flex-wrap gap-3 mb-6 bg-gray-50 p-4 border border-gray-100 rounded-lg">
                     <div className="flex flex-wrap gap-3 items-center">
                       {RENDER_MODELS.map((model) => (
@@ -2563,6 +3437,21 @@ export default function TaobaoPublish() {
               {/* ── 万象广告创意 ── */}
               <Form.Item label={<span className="font-bold text-gray-700 block">万象广告创意</span>} className="mb-8">
                 <div className="flex flex-col gap-4">
+                  <div className="flex flex-col gap-1 mb-1">
+                    <div className="text-xs font-medium text-gray-500">广告创意参考素材 ({refImagesAd.length} 张)</div>
+                    <div className="flex gap-2 flex-wrap">
+                      {refImagesAd.map((img, idx) => (
+                        <div key={idx} className="relative w-[50px] h-[50px] border border-gray-200 rounded-lg overflow-hidden group shadow-sm">
+                          <img src={img} className="w-full h-full object-cover" />
+                          <div className="absolute top-0 right-0 bg-red-500 text-white w-4 h-4 flex items-center justify-center text-[10px] cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity rounded-bl-md"
+                            onClick={() => setRefImagesAd(prev => prev.filter(u => u !== img))}>×</div>
+                        </div>
+                      ))}
+                      <div onClick={() => openR2Modal('ad')} className="w-[50px] h-[50px] border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 bg-white text-gray-400 hover:text-blue-500 transition-colors">
+                        <CloudOutlined className="text-lg mb-0.5" /><span className="text-[9px] font-bold">选图</span>
+                      </div>
+                    </div>
+                  </div>
                   <div className="p-3 bg-gradient-to-r from-violet-50 to-indigo-50 border border-violet-200 rounded-lg text-xs text-violet-700">
                     🎯 <strong>淘宝万象投放规格：</strong>图片 1:1 / 3:4 / 2:3 三种比例各5个变体；视频5种分辨率，时长2~60s，≤488.28MB。AI 创意总监深度阅读策划案，为每个格式生成专属 Hook + 场景提示词。
                   </div>
@@ -2635,25 +3524,207 @@ export default function TaobaoPublish() {
                   )}
                   {adCreativeData?.video_creatives && (
                     <div className="border border-gray-200 rounded-xl overflow-hidden">
-                      <div className="bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-2.5">
+                      <div className="bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-2.5 flex items-center justify-between">
                         <span className="text-white font-bold text-xs">🎬 万象视频广告规格（5种分辨率，2~60s，≤488.28MB）</span>
+                        <span className="text-violet-200 text-[10px]">每种规格独立生成分镜脚本 + Seedance/Wan2.2 渲染</span>
                       </div>
-                      <div className="divide-y divide-gray-100">
+                      {/* Tab 头：每种视频规格 */}
+                      <div className="flex border-b border-gray-200 bg-gray-50 overflow-x-auto">
                         {adCreativeData.video_creatives.map((vc: any, i: number) => (
-                          <div key={i} className="px-4 py-3 hover:bg-violet-50/40">
-                            <div className="flex items-start gap-3">
-                              <div className="flex-shrink-0 w-20 text-center">
-                                <div className="text-xs font-bold text-violet-700 bg-violet-100 px-2 py-1 rounded">{vc.resolution}</div>
-                                <div className="text-[9px] text-gray-400 mt-0.5">{vc.format_label} · {vc.duration_s}s</div>
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <div className="text-[10px] font-bold text-gray-700 mb-1">🎣 Hook：<span className="font-normal text-violet-600">{vc.hook_shot}</span></div>
-                                <div className="text-[10px] text-gray-500 leading-4">{vc.narrative_arc}</div>
-                              </div>
-                            </div>
-                          </div>
+                          <button type="button" key={i} onClick={() => setAdVideoTab(i)}
+                            className={`flex-shrink-0 px-3 py-2.5 text-[10px] font-bold border-b-2 transition-all cursor-pointer whitespace-nowrap ${adVideoTab === i ? 'border-violet-500 text-violet-600 bg-white' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>
+                            {vc.format_label || vc.resolution}
+                            {(adVideoClips[i] || []).some(v => v) && <span className="ml-1 text-[9px] bg-green-100 text-green-600 px-1 rounded-full">✓</span>}
+                          </button>
                         ))}
                       </div>
+                      {/* Tab 内容：每种规格独立脚本+渲染 */}
+                      {adCreativeData.video_creatives.map((vc: any, vcIdx: number) => adVideoTab === vcIdx && (
+                        <div key={vcIdx} className="p-4 bg-white">
+                          {/* 规格说明 */}
+                          <div className="flex items-start gap-3 mb-3 p-3 bg-violet-50 border border-violet-100 rounded-lg">
+                            <div className="flex-shrink-0 text-center">
+                              <div className="text-xs font-bold text-violet-700 bg-violet-100 px-2 py-1 rounded">{vc.resolution}</div>
+                              <div className="text-[9px] text-gray-400 mt-0.5">{vc.format_label} · {vc.duration_s}s</div>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[10px] font-bold text-gray-700 mb-0.5">🎣 Hook：<span className="font-normal text-violet-600">{vc.hook_shot}</span></div>
+                              <div className="text-[10px] text-gray-500 leading-4">{vc.narrative_arc}</div>
+                            </div>
+                          </div>
+                          {/* 操作按钮 */}
+                          <div className="flex items-center gap-2 flex-wrap mb-3">
+                            <Button icon={<RobotOutlined />} size="small"
+                              onClick={() => _generateAdVideoScript(vcIdx)}
+                              loading={!!adVideoGeneratingScript[vcIdx]}
+                              disabled={!!adVideoGeneratingLtx[`${vcIdx}_0`]}
+                              className="text-violet-600 border-violet-300 bg-violet-50 font-bold text-xs">
+                              生成分镜脚本
+                            </Button>
+                            {adVideoScripts[vcIdx] && (
+                              <>
+                                <Button icon={<VideoCameraOutlined />} size="small"
+                                  onClick={() => _generateAdVideoSeedance(vcIdx)}
+                                  loading={!!adVideoGeneratingSeedance[`${vcIdx}_0`]}
+                                  disabled={!!adVideoGeneratingLtx[`${vcIdx}_0`]}
+                                  className="text-purple-600 border-purple-300 bg-purple-50 font-bold text-xs">
+                                  {adVideoSeedanceProgress[vcIdx] || '▶ Seedance 生成'}
+                                </Button>
+                                <Button type="primary" icon={<RocketOutlined />} size="small"
+                                  onClick={() => _generateAdVideoLtx(vcIdx)}
+                                  loading={!!adVideoGeneratingLtx[`${vcIdx}_0`]}
+                                  disabled={!!adVideoGeneratingLtx[`${vcIdx}_0`] || !!adVideoGeneratingSeedance[`${vcIdx}_0`]}
+                                  className="bg-violet-600 border-violet-600 font-bold text-xs">
+                                  {adVideoLtxProgress[vcIdx] || '▶ Wan2.2/LTX 生成'}
+                                </Button>
+                              </>
+                            )}
+                            {(adVideoClips[vcIdx] || []).some(v => v) && (
+                              <Button size="small" icon={<DownloadOutlined />} loading={downloading}
+                                onClick={async () => {
+                                  const valid = (adVideoClips[vcIdx] || []).filter(u => u);
+                                  if (!valid.length) return;
+                                  setDownloading(true);
+                                  try {
+                                    const zip = new JSZip();
+                                    const folder = zip.folder(`ad_video_${vc.format_label}`);
+                                    for (let i = 0; i < valid.length; i++) {
+                                      const r = await fetch(`${API_BASE}/api/v1/proxy/download?url=${encodeURIComponent(valid[i])}`);
+                                      folder?.file(`${vc.format_label}_${i+1}.mp4`, await r.blob());
+                                    }
+                                    saveAs(await zip.generateAsync({ type: 'blob' }), `ad_video_${vc.format_label}.zip`);
+                                    message.success('打包下载完成！');
+                                  } catch { message.error('下载失败'); }
+                                  finally { setDownloading(false); }
+                                }}
+                                className="text-green-600 border-green-300 bg-green-50 font-bold text-xs">
+                                打包下载
+                              </Button>
+                            )}
+                          </div>
+                          {/* 生成中提示 */}
+                          {adVideoGeneratingScript[vcIdx] && (
+                            <div className="flex items-center gap-2 text-violet-600 text-xs p-3 bg-violet-50 rounded mb-3">
+                              <Spin size="small" /><span>AI 构思 {vc.format_label} 广告分镜脚本中...</span>
+                            </div>
+                          )}
+                          {/* 分镜脚本表格 */}
+                          {!adVideoGeneratingScript[vcIdx] && adVideoScripts[vcIdx] && (
+                            <div className="border border-violet-100 rounded-lg mb-3 overflow-hidden">
+                              <div className="bg-gradient-to-r from-violet-500 to-indigo-500 px-3 py-1.5 flex items-center justify-between">
+                                <span className="text-white font-bold text-xs">📋 {vc.format_label} · {adVideoScripts[vcIdx]!.storyboard.length} 个分镜 · {vc.ratio || '16:9'}</span>
+                                <Button size="small" icon={<DownloadOutlined />} onClick={() => handleDownloadCsv(adVideoScripts[vcIdx], `ad_video_${vc.format_label}`)} className="text-[10px] h-6 bg-white/20 text-white border-white/30 hover:bg-white/30 hover:text-white">下载CSV</Button>
+                              </div>
+                              <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
+                                <table className="w-full text-[10px] text-left">
+                                  <thead className="bg-violet-50 text-gray-600 font-bold border-b border-violet-100 sticky top-0 z-10">
+                                     <tr>
+                                       <th className="px-2 py-2 w-10 text-center">镜号</th>
+                                       <th className="px-2 py-2 w-14">时间</th>
+                                       <th className="px-2 py-2 w-20">景别&运镜</th>
+                                       <th className="px-2 py-2">画面描述</th>
+                                       <th className="px-2 py-2 w-[180px]">英文Prompt</th>
+                                       <th className="px-2 py-2 w-20">参考图(I2V)</th>
+                                       <th className="px-2 py-2 w-24">渲染结果</th>
+                                       <th className="px-2 py-2 w-[110px] text-center">操作</th>
+                                     </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-gray-100">
+                                    {adVideoScripts[vcIdx]!.storyboard.map((shot, idx) => (
+                                      <tr key={idx} className="hover:bg-gray-50 align-top">
+                                        <td className="px-2 py-3 text-center">
+                                          <span className="w-5 h-5 mx-auto bg-violet-100 text-violet-700 rounded-full flex items-center justify-center text-[10px] font-bold border border-violet-200">{shot.shot_number || (idx+1).toString().padStart(2,'0')}</span>
+                                        </td>
+                                        <td className="px-2 py-3 text-gray-500">{shot.time}</td>
+                                        <td className="px-2 py-3 font-medium text-gray-700">{shot.shot_and_camera}</td>
+                                        <td className="px-2 py-3 text-gray-600">{shot.logic}</td>
+                                         <td className="px-2 py-3">
+                                           <div className="text-[10px] text-gray-400 break-words leading-relaxed p-1.5 bg-gray-50 rounded border border-gray-100">{shot.scene_prompt}</div>
+                                         </td>
+                                         <td className="px-2 py-3">
+                                           <div className="w-16 h-16 border-2 border-dashed border-gray-300 rounded overflow-hidden flex flex-col items-center justify-center bg-gray-50 relative group/img">
+                                             {shot.reference_image ? (
+                                               <>
+                                                 <img src={shot.reference_image} className="w-full h-full object-cover" />
+                                                 <div className="absolute inset-0 bg-black/40 flex flex-col items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity">
+                                                   <Button size="small" type="text" className="text-white text-[9px]" onClick={() => {
+                                                     setAdVideoScripts(p => {
+                                                       const sc = p[vcIdx];
+                                                       if (!sc) return p;
+                                                       const newSb = [...sc.storyboard];
+                                                       newSb[idx] = { ...newSb[idx], reference_image: undefined };
+                                                       return { ...p, [vcIdx]: { ...sc, storyboard: newSb } };
+                                                     });
+                                                   }}>删除</Button>
+                                                 </div>
+                                               </>
+                                             ) : (
+                                               <Upload accept="image/*" showUploadList={false} customRequest={async (options: any) => {
+                                                 const { file, onSuccess, onError } = options;
+                                                 const fd = new FormData();
+                                                 fd.append('file', file);
+                                                 try {
+                                                   const res = await fetch(`${API_BASE}/api/v1/r2/upload`, { method: 'POST', body: fd });
+                                                   const data = await res.json();
+                                                   if (data.code === 200) {
+                                                     setAdVideoScripts(p => {
+                                                       const sc = p[vcIdx];
+                                                       if (!sc) return p;
+                                                       const newSb = [...sc.storyboard];
+                                                       newSb[idx] = { ...newSb[idx], reference_image: data.data.url };
+                                                       return { ...p, [vcIdx]: { ...sc, storyboard: newSb } };
+                                                     });
+                                                     onSuccess(data, file);
+                                                   } else throw new Error(data.message);
+                                                 } catch(e) { onError(e); }
+                                               }}>
+                                                 <div className="w-16 h-16 flex flex-col items-center justify-center cursor-pointer hover:text-violet-500 text-gray-400">
+                                                   <PlusOutlined className="text-xs mb-1" />
+                                                   <span className="text-[8px]">上传垫图</span>
+                                                 </div>
+                                               </Upload>
+                                             )}
+                                           </div>
+                                         </td>
+                                         <td className="px-2 py-3">
+                                           <div className="w-20 h-14 border border-gray-200 rounded overflow-hidden flex items-center justify-center bg-black relative">
+                                            {(adVideoClips[vcIdx] && adVideoClips[vcIdx][idx]) ? (
+                                              <><video src={adVideoClips[vcIdx][idx]} controls className="w-full h-full object-cover" />
+                                              <Button size="small" type="text" icon={<DownloadOutlined />} className="absolute top-0 right-0 h-5 w-5 bg-black/50 text-white border-0" onClick={() => window.open(adVideoClips[vcIdx][idx])} /></>
+                                            ) : adVideoGeneratingLtx[`${vcIdx}_${idx}`] || adVideoGeneratingSeedance[`${vcIdx}_${idx}`] ? (
+                                              <div className="flex flex-col items-center"><Spin size="small" /><span className="text-[8px] text-gray-300 mt-1">渲染中</span></div>
+                                            ) : (
+                                              <span className="text-[9px] text-gray-500">等待渲染</span>
+                                            )}
+                                          </div>
+                                        </td>
+                                        <td className="px-2 py-3 flex flex-col gap-1.5 items-center">
+                                          <Button size="small" type="primary" className="text-[10px] h-6 w-full bg-indigo-600 font-bold border-0"
+                                            onClick={() => _generateAdVideoLtxScene(vcIdx, idx)}
+                                            loading={adVideoGeneratingLtx[`${vcIdx}_${idx}`]} disabled={adVideoGeneratingLtx[`${vcIdx}_${idx}`] || adVideoGeneratingSeedance[`${vcIdx}_${idx}`]}>
+                                            Wan2.2
+                                          </Button>
+                                          <Button size="small" className="text-[10px] h-6 w-full text-purple-600 border-purple-200 bg-purple-50"
+                                            onClick={() => _generateAdVideoSeedanceScene(vcIdx, idx)}
+                                            loading={adVideoGeneratingSeedance[`${vcIdx}_${idx}`]} disabled={adVideoGeneratingLtx[`${vcIdx}_${idx}`] || adVideoGeneratingSeedance[`${vcIdx}_${idx}`]}>
+                                            Seedance
+                                          </Button>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          )}
+                          {/* 空态 */}
+                          {!adVideoGeneratingScript[vcIdx] && !adVideoScripts[vcIdx] && (
+                            <div className="text-center py-6 text-gray-300 text-xs border-2 border-dashed border-gray-200 rounded-xl">
+                              点击「生成分镜脚本」，AI 将为 <strong className="text-gray-400">{vc.format_label}</strong> 规格创作广告分镜，再一键渲染视频
+                            </div>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   )}
                   {!adCreativeData && !generatingAdCreative && (
@@ -2690,7 +3761,7 @@ export default function TaobaoPublish() {
         <div className="h-[400px] overflow-y-auto mt-4">
           <div className="grid grid-cols-5 gap-3 p-2">
             {r2Gallery.map((url, idx) => {
-              const isSelected = r2ModalTarget === 'global' ? selectedR2Images.includes(url) : buyerShowR2Images.includes(url);
+              const isSelected = getRefImages(r2ModalTarget).includes(url);
               return (
               <div key={idx} className={`aspect-square border-2 rounded-md overflow-hidden cursor-pointer relative ${isSelected ? 'border-blue-500' : 'border-gray-200'}`} onClick={() => toggleR2ImageSelection(url)}>
                 <img src={url} className="w-full h-full object-cover" />

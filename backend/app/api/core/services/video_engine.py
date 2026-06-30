@@ -30,6 +30,13 @@ if not SEEDANCE_API_KEY:
 
 SEEDANCE_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks"
 SEEDANCE_MODEL = os.environ.get("SEEDANCE_MODEL", "doubao-seedance-2-0-260128")
+# 视频分辨率档位：480p / 720p / 1080p / 4k。
+# 不同档位计费不同（分辨率越高越贵）。此前未显式指定，API 会回退到模型默认档（1080p，
+# 即最贵档）。现统一显式声明，默认 720p 以平衡画质与成本，可通过环境变量覆盖。
+SEEDANCE_RESOLUTION = os.environ.get("SEEDANCE_RESOLUTION", "720p")
+# 视频时长（秒），可通过环境变量覆盖
+SEEDANCE_DURATION = int(os.environ.get("SEEDANCE_DURATION", "5"))
+
 
 # 轮询参数
 _POLL_INTERVAL_S = 5
@@ -40,6 +47,9 @@ def generate_video(
     prompt: str,
     image_urls: list[str] | None = None,
     stop_event: threading.Event | None = None,
+    ratio: str = "16:9",
+    resolution: str | None = None,
+    duration: int | None = None,
 ) -> str:
     """
     提交 Seedance 视频生成任务并轮询结果，返回视频 URL。
@@ -50,10 +60,15 @@ def generate_video(
                      - 传入时：取第一张作为首帧，实现图生视频，保持产品外观一致。
                      - 不传或为空：纯文生视频。
         stop_event:  threading.Event，外部设置后轮询提前退出（客户端断开时使用）。
+        ratio:       视频宽高比（1:1 / 16:9 / 9:16 / 3:4 等）。
+        resolution:  分辨率档位（480p/720p/1080p/4k）。计费随档位升高而升高。
+                     不传则使用环境变量 SEEDANCE_RESOLUTION（默认 720p）。
+        duration:    时长（秒）。不传则使用环境变量 SEEDANCE_DURATION（默认 5）。
 
     Returns:
         成功时返回视频 URL 字符串；失败时返回以 "❌" 开头的错误描述。
     """
+
     if not SEEDANCE_API_KEY:
         return "❌ SEEDANCE_API_KEY 未配置，无法生成视频"
 
@@ -75,17 +90,27 @@ def generate_video(
 
     content.append({"type": "text", "text": prompt})
 
+    # 分辨率/时长：优先用调用方显式传入，否则回退到环境变量默认值
+    _resolution = resolution or SEEDANCE_RESOLUTION
+    _duration = duration if duration is not None else SEEDANCE_DURATION
+
     payload = {
         "model": SEEDANCE_MODEL,
         "content": content,
         "generate_audio": False,
-        "ratio": "16:9",
-        "duration": 5,
+        "ratio": ratio or "16:9",
+        # 显式声明分辨率档位，避免回退到模型默认最贵档（1080p）
+        "resolution": _resolution,
+        "duration": _duration,
         "watermark": False,
     }
 
     # ---- Step 1：提交任务 ----
-    logger.info("[VideoEngine] 提交任务，prompt前50字: %s", prompt[:50])
+    logger.info(
+        "[VideoEngine] 提交任务 ratio=%s resolution=%s duration=%ss，prompt前50字: %s",
+        payload["ratio"], _resolution, _duration, prompt[:50],
+    )
+
     try:
         submit_resp = requests.post(
             SEEDANCE_BASE_URL, headers=headers, json=payload, timeout=30

@@ -76,13 +76,43 @@ class StorageConfig:
 R2Config = StorageConfig
 
 
+def _resolve_proxies() -> dict | None:
+    """读取代理配置，供 boto3 访问海外对象存储（如 Cloudflare R2）时走代理。
+
+    国内/内网主机直连 *.r2.cloudflarestorage.com 时，TLS 握手常被中途重置
+    （表现为 `SSL: UNEXPECTED_EOF_WHILE_READING`），导致上传/列表全部失败。
+    配置一个本地/可达的 HTTP 代理即可让这条链路稳定。
+
+    优先读取 STORAGE_PROXY_URL / R2_PROXY_URL（同时用于 http 与 https），
+    其次回退到标准的 HTTPS_PROXY / HTTP_PROXY 环境变量。
+    返回 None 表示不使用代理（直连）。
+    """
+    explicit = _env("STORAGE_PROXY_URL", "R2_PROXY_URL")
+    if explicit:
+        return {"http": explicit, "https": explicit}
+
+    https_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    http_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+    proxies = {}
+    if http_proxy:
+        proxies["http"] = http_proxy
+    if https_proxy:
+        proxies["https"] = https_proxy
+    return proxies or None
+
+
 def _build_s3_client():
-    cfg = BotoConfig(
+    proxies = _resolve_proxies()
+    cfg_kwargs = dict(
         signature_version="s3v4",
         retries={"max_attempts": 3, "mode": "standard"},
         connect_timeout=30,
         read_timeout=300,
     )
+    if proxies:
+        logger.info("☁️ R2 客户端启用代理: %s", proxies)
+        cfg_kwargs["proxies"] = proxies
+    cfg = BotoConfig(**cfg_kwargs)
     return boto3.client(
         "s3",
         endpoint_url=StorageConfig.ENDPOINT_URL,
@@ -91,6 +121,7 @@ def _build_s3_client():
         config=cfg,
         region_name=StorageConfig.REGION,
     )
+
 
 
 class R2StorageService:
@@ -135,21 +166,50 @@ class R2StorageService:
     # ------------------------------------------------------------------ #
     # 分页列表
     # ------------------------------------------------------------------ #
+    # 支持的媒体扩展名
+    IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"}
+    AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".aac", ".flac", ".m4a", ".opus"}
+    VIDEO_EXTS = {".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v"}
+
     @staticmethod
-    def list_images(page: int = 1, limit: int = 30) -> tuple[list[dict], bool]:
+    def list_images(page: int = 1, limit: int = 30, file_type: str = "all") -> tuple[list[dict], bool]:
         """
         返回 (media_list, has_more)。
         media_list 每项包含 url / key / size / last_modified。
+        file_type: "all" | "image" | "audio" | "video"
         """
         s3 = _build_s3_client()
         try:
-            resp = s3.list_objects_v2(Bucket=R2Config.BUCKET_NAME, MaxKeys=1000)
-            if "Contents" not in resp:
+            # 拉取最多 5000 条（分页获取所有对象）
+            all_objects = []
+            kwargs = {"Bucket": R2Config.BUCKET_NAME, "MaxKeys": 1000}
+            while True:
+                resp = s3.list_objects_v2(**kwargs)
+                all_objects.extend(resp.get("Contents", []))
+                if not resp.get("IsTruncated"):
+                    break
+                kwargs["ContinuationToken"] = resp["NextContinuationToken"]
+
+            if not all_objects:
                 return [], False
 
-            sorted_files = sorted(
-                resp["Contents"], key=lambda x: x["LastModified"], reverse=True
-            )
+            sorted_files = sorted(all_objects, key=lambda x: x["LastModified"], reverse=True)
+
+            def _match(key: str) -> bool:
+                ext = "." + key.rsplit(".", 1)[-1].lower() if "." in key else ""
+                if file_type == "image":
+                    return ext in R2StorageService.IMAGE_EXTS
+                if file_type == "audio":
+                    return ext in R2StorageService.AUDIO_EXTS
+                if file_type == "video":
+                    return ext in R2StorageService.VIDEO_EXTS
+                # "all" — 返回所有已知媒体格式
+                return ext in (
+                    R2StorageService.IMAGE_EXTS
+                    | R2StorageService.AUDIO_EXTS
+                    | R2StorageService.VIDEO_EXTS
+                )
+
             all_media = [
                 {
                     "url": R2Config.public_url(obj["Key"]),
@@ -158,7 +218,7 @@ class R2StorageService:
                     "last_modified": obj["LastModified"].isoformat(),
                 }
                 for obj in sorted_files
-                if obj["Key"].lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+                if _match(obj["Key"])
             ]
 
             start = (page - 1) * limit

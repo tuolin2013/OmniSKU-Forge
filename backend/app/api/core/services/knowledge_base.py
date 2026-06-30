@@ -90,6 +90,35 @@ class ProductDatabase:
         """
         return self.records.get(sku_name, {})
 
+    def get_multi_sku_info(self, sku_names: list) -> dict:
+        """
+        多SKU合并模式：将多个 SKU 的数据合并为一个聚合字典，供合并策划使用。
+        返回结构：
+        {
+            "__mode__": "multi_sku",
+            "__system_category__": "tea" / "pet",  # 取第一个有效SKU的品类
+            "__sku_list__": ["SKU-A", "SKU-B", ...],
+            "__sku_details__": {"SKU-A": {...}, "SKU-B": {...}},  # 各SKU原始数据
+        }
+        """
+        valid_skus = [n for n in sku_names if n and self.records.get(n)]
+        if not valid_skus:
+            return {}
+
+        first = self.records[valid_skus[0]]
+        category = first.get("__system_category__", "pet")
+
+        sku_details = {}
+        for name in valid_skus:
+            sku_details[name] = self.records[name]
+
+        return {
+            "__mode__": "multi_sku",
+            "__system_category__": category,
+            "__sku_list__": valid_skus,
+            "__sku_details__": sku_details,
+        }
+
     def get_category_tree(self) -> list:
         """
         将字典数据聚合成前端 Cascader 需要的树状结构:
